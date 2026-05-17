@@ -63,7 +63,10 @@ def _cleanup_children() -> None:
         pids = list(_child_pids)
     for pid in pids:
         try:
-            os.killpg(os.getpgid(pid), signal.SIGTERM)
+            if hasattr(os, "killpg"):
+                os.killpg(os.getpgid(pid), signal.SIGTERM)
+            else:
+                os.kill(pid, signal.SIGTERM)
         except (ProcessLookupError, PermissionError, OSError):
             continue
 
