@@ -42,5 +42,25 @@ class EnvV3Tests(unittest.TestCase):
                 self.assertIsNone(bird_x.is_bird_authenticated())
 
 
+class ThreadsAvailabilityTests(unittest.TestCase):
+    """Threads is in the SC default-on family: same key, same per-call cost
+    shape as TikTok / Instagram, so the same default-on rule applies.
+    Suppression goes through EXCLUDE_SOURCES, not gated opt-in."""
+
+    def test_threads_available_with_sc_key_only(self):
+        self.assertTrue(env.is_threads_available({"SCRAPECREATORS_API_KEY": "k"}))
+
+    def test_threads_unavailable_without_sc_key(self):
+        self.assertFalse(env.is_threads_available({}))
+        self.assertFalse(env.is_threads_available({"INCLUDE_SOURCES": "threads"}))
+
+    def test_threads_does_not_require_include_sources(self):
+        """Regression guard: INCLUDE_SOURCES should not be needed."""
+        self.assertTrue(env.is_threads_available({
+            "SCRAPECREATORS_API_KEY": "k",
+            "INCLUDE_SOURCES": "",
+        }))
+
+
 if __name__ == "__main__":
     unittest.main()

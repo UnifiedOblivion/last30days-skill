@@ -152,8 +152,10 @@ Say "eli5 on" after any research run. The synthesis rewrites in plain language. 
 
 - **Free Reddit comments.** Public JSON gives you threads + top comments with upvote counts. No API key, no ScrapeCreators. Just works.
 - **YouTube transcripts that actually work.** Widened candidate pool 3x past music videos to reach talk/review content with captions.
-- **Threads, Pinterest, YouTube + TikTok comments.** Opt-in sources via ScrapeCreators. Set `INCLUDE_SOURCES=tiktok,instagram` and add threads, pinterest, youtube_comments, tiktok_comments for more. `youtube_comments` and `tiktok_comments` surface top comments with vote counts the same way Reddit does.
-- **Perplexity Sonar.** Grounded web search with citations via OpenRouter. Add `OPENROUTER_API_KEY` to unlock.
+- **TikTok, Instagram, Threads.** All three activate automatically once `SCRAPECREATORS_API_KEY` is set — same key, same per-call cost. Suppress any of them with `EXCLUDE_SOURCES=tiktok,instagram,threads` (any comma-separated subset).
+- **Pinterest.** Per-query opt-in (visual pins, narrow utility): the model passes `--search=pinterest` for the runs that need it. Requires `SCRAPECREATORS_API_KEY`.
+- **YouTube + TikTok comments.** Persistent opt-in via `INCLUDE_SOURCES=youtube_comments,tiktok_comments` because each video pulls N extra ScrapeCreators calls on top of the base search. Surface top comments with vote counts the same way Reddit does.
+- **Perplexity Sonar.** Grounded web search with citations via OpenRouter. Add `OPENROUTER_API_KEY` and `INCLUDE_SOURCES=perplexity` (it's a separate paid API — opt-in keeps you from being surprise-billed).
 - **Polymarket noise filtering.** Common-word disambiguation prevents "Apple" from matching "Will Apple release a car?"
 - **Resilient Reddit.** Timeout budgets and runtime fallback. One slow thread doesn't kill the whole run.
 - **Fun judge v2.** Humor scoring baked into the narrative. Reddit's cleverest one-liners mixed into the synthesis where they fit, not dumped in a separate section.

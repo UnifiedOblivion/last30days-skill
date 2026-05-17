@@ -584,12 +584,12 @@ def _parse_include_sources(config: dict[str, Any]) -> set[str]:
 def is_threads_available(config: dict[str, Any]) -> bool:
     """Check if Threads source is available.
 
-    Requires SCRAPECREATORS_API_KEY AND 'threads' in INCLUDE_SOURCES.
-    Threads is an opt-in source - it is not activated by default.
+    Returns True when SCRAPECREATORS_API_KEY is set. Threads runs alongside
+    TikTok and Instagram as part of the SC family — same key, same per-call
+    cost shape, so the same default-on rule applies. Suppress via
+    EXCLUDE_SOURCES=threads.
     """
-    if not config.get('SCRAPECREATORS_API_KEY'):
-        return False
-    return 'threads' in _parse_include_sources(config)
+    return bool(config.get('SCRAPECREATORS_API_KEY'))
 
 
 def is_instagram_available(config: dict[str, Any]) -> bool:
