@@ -9,7 +9,10 @@ permissions:
   contents: write
 
 jobs:
-  build-and-release:
+  # Build the existing .skill artifact (Claude Code / Codex / Cursor install
+  # surface). Unchanged from prior versions; just isolated into its own job
+  # so the .mcpb matrix can run in parallel.
+  build-skill:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -22,10 +25,101 @@ jobs:
           bash skills/last30days/scripts/build-skill.sh
           test -f dist/last30days.skill
 
+      - name: Upload skill artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: last30days-skill
+          path: dist/last30days.skill
+
+  # Cross-compile the Go MCP server for each Claude Desktop platform and
+  # package each as a .mcpb. printing-press bundle handles the manifest +
+  # zip layout; we only supply the pre-built binary via --skip-build.
+  build-mcpb:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: darwin
+            goarch: arm64
+            platform: darwin/arm64
+          - goos: darwin
+            goarch: amd64
+            platform: darwin/amd64
+          - goos: linux
+            goarch: amd64
+            platform: linux/amd64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Install printing-press
+        # Pin to a known-good PP release so the bundle command's behavior
+        # is deterministic across our tags. Bump deliberately when adopting
+        # a newer PP version. GOSUMDB=off skips the sumdb 404 some
+        # private-namespaced go install calls hit even when the repo is
+        # public; harmless here because the module path is fully qualified.
+        env:
+          GOPRIVATE: github.com/mvanhorn/*
+          GOSUMDB: "off"
+        run: go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@v4.8.0
+
+      - name: Sync engine into vendored/
+        run: bash mcp/scripts/sync-engine.sh
+
+      - name: Build MCP binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p mcp/build
+          go -C mcp build \
+            -ldflags "-X main.Version=${{ github.ref_name }}" \
+            -o build/last30days-pp-mcp \
+            ./cmd/last30days-pp-mcp
+
+      - name: Bundle .mcpb
+        # printing-press bundle reads manifest.json from the cli dir and
+        # rewrites the binary into bin/<entry_point> inside the zip. The
+        # --platform tag drives the output filename suffix; the binary
+        # itself is whatever we just cross-compiled.
+        run: |
+          printing-press bundle mcp \
+            --skip-build \
+            --binary mcp/build/last30days-pp-mcp \
+            --platform ${{ matrix.platform }} \
+            --output mcp/build/last30days-pp-mcp-${{ matrix.goos }}-${{ matrix.goarch }}.mcpb
+
+      - name: Upload .mcpb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcpb-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: mcp/build/last30days-pp-mcp-${{ matrix.goos }}-${{ matrix.goarch }}.mcpb
+
+  # Gather every platform artifact and attach to one GitHub release.
+  # release-notes generation reads commits since the prior tag.
+  release:
+    needs: [build-skill, build-mcpb]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/last30days.skill
+          files: |
+            dist/last30days.skill
+            dist/last30days-pp-mcp-*.mcpb
           generate_release_notes: true
           draft: false
           prerelease: false
