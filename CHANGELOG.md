@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Narrative lens for company / product / service topics.** Comparison tables gain a `Setting the narrative?` axis that judges whether each entity's community conversation is actually about what the entity *pitches* (its first-party positioning) or about something else — pricing, rivals, an incident, a ToS change. A new mandatory research step captures each entity's current stated positioning from first-party sources (homepage, docs, pricing) rather than from memory, and single-entity company runs get a `narrative-check` synthesis beat surfacing the same signal. The mismatch is the point: companies usually don't control their own conversation.
+
+### Fixed
+
+- Entity-grounding rerank demotion now keys on the head token of the primary entity instead of requiring the full multi-word phrase as a contiguous substring. A high-engagement on-entity item (e.g. a 323-pt HN thread titled "Stripe is friendly to 'friendly fraud'") is no longer demoted to score 0 on a `Stripe payments` query just because it lacks the trailing search-hint word. The intended demotion still fires for items that never name the brand at all. The keyless Reddit comment-enrichment slot selection (`_slot_priority`), which mirrors this signal, was updated to the same head-token grounding so the two paths stay consistent.
+
 ## [3.3.2] - 2026-06-06
 
 ### Fixed
