@@ -171,7 +171,7 @@ Say "eli5 on" after any research run. The synthesis rewrites in plain language. 
 | Surface | Install | Updates |
 |---------|---------|---------|
 | **Claude Code** (recommended) | `/plugin marketplace add mvanhorn/last30days-skill` | Auto via marketplace, or `claude plugin update last30days@last30days-skill` |
-| **Codex, Cursor, Copilot, Gemini CLI, GitHub Copilot, or any of 50+ [Agent Skills](https://agentskills.io) hosts** | `npx skills add mvanhorn/last30days-skill -g` | `npx skills update last30days -g` |
+| **Codex, Cursor, Copilot, Gemini CLI, or any of 50+ [Agent Skills](https://agentskills.io) hosts** | `npx skills add mvanhorn/last30days-skill -g` | `npx skills update last30days -g` |
 | **claude.ai** (web) | [Download `last30days.skill`](https://github.com/mvanhorn/last30days-skill/releases/latest/download/last30days.skill) and upload via Settings > Capabilities > Skills > + | Re-download and re-upload |
 | **OpenClaw** | `clawhub install last30days-official` | `clawhub update last30days-official` |
 
