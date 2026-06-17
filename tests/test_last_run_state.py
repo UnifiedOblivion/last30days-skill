@@ -82,13 +82,27 @@ class LastRunStateTests(unittest.TestCase):
 
 
 class TestSkillMdFirstRunReference(unittest.TestCase):
-    """Verifies SKILL.md does not reference files missing from the repo."""
+    """Verifies SKILL.md references that exist in the CLI."""
 
     def test_nux_wizard_not_referenced(self):
         content = SKILL_MD.read_text(encoding="utf-8")
         self.assertNotIn(
             "nux-wizard.md", content,
             "SKILL.md should not reference the missing nux-wizard.md file",
+        )
+
+    def test_setup_subcommand_exists(self):
+        """The setup subcommand referenced in SKILL.md must exist."""
+        result = subprocess.run(
+            [sys.executable, str(LAST30DAYS_SCRIPT), "setup", "--help"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "usage:", result.stdout.lower(),
+            "--help should print usage for setup subcommand",
         )
 
 
