@@ -35,12 +35,19 @@ def run_auto_setup(config: Dict[str, Any]) -> Dict[str, Any]:
       from ``env.cookie_extraction_browsers()`` (honors ``FROM_BROWSER``;
       defaults to Firefox/Safari, so no Chrome Keychain prompt)
     - Checks if yt-dlp is installed
+    - Best-effort install of digg-pp-cli (Printing Press library)
 
     Returns:
         Dict with keys:
           cookies_found: {source_name: browser_name} for each source where cookies were found
           ytdlp_installed: bool
+          ytdlp_action: already_installed | installed | install_failed | no_homebrew
+          digg_installed: bool (True when the engine can resolve digg-pp-cli on PATH)
+          digg_action: already_installed | installed | installed_off_path | install_failed | no_npx
           env_written: bool (always False here — caller writes config separately)
+          ytdlp_stderr: present when ytdlp_action is install_failed
+          digg_stderr: present when digg_action is install_failed
+          digg_path: present when digg_action is installed_off_path (binary on disk, not on PATH)
     """
     from . import cookie_extract
     from .env import COOKIE_DOMAINS, cookie_extraction_browsers
@@ -97,10 +104,7 @@ def run_auto_setup(config: Dict[str, Any]) -> Dict[str, Any]:
         ytdlp_installed = False
         ytdlp_action = "no_homebrew"
 
-    # Install the free, keyless digg-pp-cli so the Digg source activates.
-    # available_sources() already includes "digg" whenever the binary is on
-    # PATH (pipeline.py), so installing it here is the only NUX gap.
-    digg_installed, digg_action, digg_stderr = _install_digg_cli()
+    digg_installed, digg_action, digg_stderr, digg_path = _install_digg_cli()
 
     results: Dict[str, Any] = {
         "cookies_found": cookies_found,
@@ -114,64 +118,104 @@ def run_auto_setup(config: Dict[str, Any]) -> Dict[str, Any]:
         results["ytdlp_stderr"] = brew_stderr
     if digg_action == "install_failed":
         results["digg_stderr"] = digg_stderr
+    if digg_path:
+        results["digg_path"] = digg_path
     return results
 
 
 # Generous timeout: the install shells out to `npx`, which may download the
 # Printing Press package and build the Go binary over the network.
 DIGG_INSTALL_TIMEOUT = 300
+DIGG_CLI_BIN = "digg-pp-cli"
+# Pin the catalog installer; matches printing-press-library npm 0.1.16 default
+# ($HOME/.local/bin on macOS/Linux).
+PRINTING_PRESS_NPM = "@mvanhorn/printing-press-library@0.1.16"
+DIGG_INSTALL_CMD = f"npx -y {PRINTING_PRESS_NPM} install digg --cli-only"
+
+
+def _digg_bin_candidate_paths() -> list[Path]:
+    """Known install locations for digg-pp-cli (Printing Press library defaults).
+
+    Order: current installer default (~/.local/bin), legacy Go bins, Windows
+    managed dir. ``pipeline.available_sources()`` only activates Digg when
+    ``shutil.which`` resolves on PATH — probing these dirs is for setup
+    verification and honest off-PATH messaging, not engine activation.
+    """
+    home = Path.home()
+    candidates: list[Path] = [home / ".local" / "bin" / DIGG_CLI_BIN]
+    gopath = os.environ.get("GOPATH")
+    if gopath:
+        candidates.append(Path(gopath) / "bin" / DIGG_CLI_BIN)
+    candidates.append(home / "go" / "bin" / DIGG_CLI_BIN)
+    if os.name == "nt":
+        local_app = os.environ.get("LOCALAPPDATA") or os.environ.get("LocalAppData")
+        if local_app:
+            candidates.append(
+                Path(local_app) / "Programs" / "PrintingPress" / "bin" / f"{DIGG_CLI_BIN}.exe"
+            )
+    return candidates
 
 
 def _digg_on_path() -> Optional[str]:
-    """Return the digg-pp-cli path if resolvable, else None.
+    """Return digg-pp-cli when the engine would activate Digg (PATH-resolvable)."""
+    return shutil.which(DIGG_CLI_BIN)
 
-    Checks PATH first, then the Go bin directory the Printing Press installer
-    writes to (``$GOPATH/bin`` or ``~/go/bin``), which may not be on this
-    process's PATH yet immediately after install.
-    """
-    found = shutil.which("digg-pp-cli")
-    if found:
-        return found
-    candidates = []
-    gopath = os.environ.get("GOPATH")
-    if gopath:
-        candidates.append(Path(gopath) / "bin" / "digg-pp-cli")
-    candidates.append(Path.home() / "go" / "bin" / "digg-pp-cli")
-    for candidate in candidates:
+
+def _digg_off_path_binary() -> Optional[str]:
+    """Return digg-pp-cli path from known install dirs when not on PATH."""
+    for candidate in _digg_bin_candidate_paths():
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return str(candidate)
     return None
 
 
-def _install_digg_cli() -> Tuple[bool, str, str]:
+def _install_digg_cli() -> Tuple[bool, str, str, str]:
     """Best-effort install of the digg-pp-cli binary.
 
     Mirrors the yt-dlp/brew auto-install: it never raises, and degrades to a
-    recommend-only outcome when the installer is unavailable. The Digg source
-    is free, keyless, and read-only, so it installs silently like yt-dlp
-    rather than gating behind an opt-in.
+    recommend-only outcome when the installer is unavailable. Uses
+    ``@mvanhorn/printing-press-library`` (``--cli-only``) — the same catalog
+    installer as pp-digg; Hermes/OpenClaw skill wiring is irrelevant here.
 
-    Returns ``(installed, action, stderr)`` where ``action`` is one of:
-      already_installed | installed | install_failed | no_npx
-    ``stderr`` is populated only on ``install_failed``.
+    Returns ``(engine_active, action, stderr, off_path_binary)`` where
+    ``engine_active`` is True only when ``shutil.which`` resolves the binary
+    (matching ``pipeline.available_sources()``). ``action`` is one of:
+      already_installed | installed | installed_off_path | install_failed | no_npx
+    ``stderr`` is populated on ``install_failed``. ``off_path_binary`` is set
+    when the binary exists on disk but is not PATH-visible to this process.
     """
-    if _digg_on_path() is not None:
-        return True, "already_installed", ""
+    on_path = _digg_on_path()
+    if on_path:
+        return True, "already_installed", "", ""
+    off_path = _digg_off_path_binary()
+    if off_path:
+        return False, "installed_off_path", "", off_path
     if shutil.which("npx") is None:
-        return False, "no_npx", ""
+        return False, "no_npx", "", ""
     try:
         proc = subprocess.run(
-            ["npx", "-y", "@mvanhorn/printing-press", "install", "digg", "--cli-only"],
+            ["npx", "-y", PRINTING_PRESS_NPM, "install", "digg", "--cli-only"],
             capture_output=True, text=True, timeout=DIGG_INSTALL_TIMEOUT,
         )
     except Exception as exc:
         logger.warning("npx install digg exception: %s", exc)
-        return False, "install_failed", str(exc)
-    if proc.returncode == 0 and _digg_on_path() is not None:
-        return True, "installed", ""
-    stderr = proc.stderr or "install completed but digg-pp-cli was not found on PATH"
-    logger.warning("npx install digg failed (rc=%s): %s", proc.returncode, stderr)
-    return False, "install_failed", stderr
+        return False, "install_failed", str(exc), ""
+    if proc.returncode != 0:
+        stderr = proc.stderr or f"npx install digg exited {proc.returncode}"
+        logger.warning("npx install digg failed (rc=%s): %s", proc.returncode, stderr)
+        return False, "install_failed", stderr, ""
+    on_path = _digg_on_path()
+    if on_path:
+        return True, "installed", "", ""
+    off_path = _digg_off_path_binary()
+    if off_path:
+        combined = (proc.stderr or "").strip()
+        if combined:
+            logger.warning("digg-pp-cli installed off PATH: %s", combined)
+        return False, "installed_off_path", combined, off_path
+    stderr = proc.stderr or "install completed but digg-pp-cli was not found"
+    logger.warning("npx install digg failed verification: %s", stderr)
+    return False, "install_failed", stderr, ""
 
 
 def _open_secret_append(path: Path):
@@ -305,17 +349,23 @@ def get_setup_status_text(results: Dict[str, Any]) -> str:
         lines.append("  - yt-dlp not found (install with: brew install yt-dlp)")
 
     digg_action = results.get("digg_action", "")
-    digg_install_cmd = "npx -y @mvanhorn/printing-press install digg --cli-only"
     if digg_action == "installed":
         lines.append("  - Installed Digg CLI (free AI-news clusters source now active)")
     elif digg_action == "already_installed":
         lines.append("  - Digg CLI already installed (AI-news clusters active)")
+    elif digg_action == "installed_off_path":
+        digg_path = results.get("digg_path", "$HOME/.local/bin/digg-pp-cli")
+        lines.append(
+            f"  - Digg CLI found at {digg_path} but not on PATH — add "
+            "$HOME/.local/bin to PATH and restart your agent session/gateway "
+            "for Digg to activate"
+        )
     elif digg_action == "install_failed":
-        lines.append(f"  - Digg CLI install failed — run `{digg_install_cmd}` manually")
+        lines.append(f"  - Digg CLI install failed — run `{DIGG_INSTALL_CMD}` manually")
     elif digg_action == "no_npx":
         lines.append(
             "  - Digg CLI not installed (free, optional). Install Node/npx, then: "
-            f"{digg_install_cmd}"
+            f"{DIGG_INSTALL_CMD}"
         )
 
     env_written = results.get("env_written", False)
@@ -342,14 +392,17 @@ _OPENCLAW_KEY_NAMES = [
 
 
 def run_openclaw_setup(config: Dict[str, Any]) -> Dict[str, Any]:
-    """Server-side setup probe: no cookies, just tool + key availability.
+    """Server-side setup probe: no cookies, tool + key availability, Digg CLI.
 
-    Returns a dict suitable for JSON output to stdout so that SKILL.md
-    can present appropriate options to the user.
+    Best-effort installs digg-pp-cli when npx is available (same as desktop
+    ``run_auto_setup``). Returns a dict suitable for JSON output to stdout so
+    that SKILL.md can present appropriate options to the user.
     """
     yt_dlp = shutil.which("yt-dlp") is not None
     node = shutil.which("node") is not None
     python3 = shutil.which("python3") is not None
+
+    digg_installed, digg_action, digg_stderr, digg_path = _install_digg_cli()
 
     keys: Dict[str, bool] = {}
     for key_name in _OPENCLAW_KEY_NAMES:
@@ -365,13 +418,20 @@ def run_openclaw_setup(config: Dict[str, Any]) -> Dict[str, Any]:
     else:
         x_method = None
 
-    return {
+    payload: Dict[str, Any] = {
         "yt_dlp": yt_dlp,
         "node": node,
         "python3": python3,
+        "digg_cli": digg_installed,
+        "digg_action": digg_action,
         "keys": keys,
         "x_method": x_method,
     }
+    if digg_path:
+        payload["digg_path"] = digg_path
+    if digg_action == "install_failed" and digg_stderr:
+        payload["digg_stderr"] = digg_stderr
+    return payload
 
 
 # ---------------------------------------------------------------------------

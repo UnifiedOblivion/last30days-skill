@@ -339,7 +339,7 @@ Before proceeding to Step 1, handle first-run setup.
 
 **If this IS a first run:**
 - Run `python3 skills/last30days/scripts/last30days.py setup` (relative to the skill root) to launch the setup wizard.
-- Follow the wizard's prompts end-to-end. The wizard handles platform detection (OpenClaw vs Claude Code), auto vs manual setup, browser cookie extraction, ScrapeCreators opt-in, a best-effort auto-install of the free, keyless Digg CLI (`digg-pp-cli`, which activates the Digg AI-news source — recommend-only if `npx` is unavailable), and the initial topic picker.
+- Follow the wizard's prompts end-to-end. The wizard handles platform detection (OpenClaw vs Claude Code), auto vs manual setup, browser cookie extraction, ScrapeCreators opt-in, a best-effort auto-install of the free, keyless Digg CLI (`digg-pp-cli` via `@mvanhorn/printing-press-library install digg --cli-only` — Digg activates only when the binary is on the **agent subprocess PATH**, typically `$HOME/.local/bin`; setup reports honestly if the CLI is installed off-PATH; recommend-only if `npx` is unavailable), and the initial topic picker.
 - After the wizard writes `SETUP_COMPLETE=true` to `~/.config/last30days/.env`, proceed to research.
 
 The setup wizard lives as a Python module so it works across all hosts (Claude Code, Codex, Cursor, etc.) and the common-case (already set up) path through this file stays short.

@@ -13,8 +13,17 @@ from lib import setup_wizard
 class TestRunOpenclawSetup:
     """Tests for run_openclaw_setup()."""
 
+    @staticmethod
+    def _patch_digg_noop(func):
+        """Keep OpenClaw setup tests free of real digg-pp-cli / npx side effects."""
+        return patch(
+            "lib.setup_wizard._install_digg_cli",
+            return_value=(False, "no_npx", "", ""),
+        )(func)
+
+    @_patch_digg_noop
     @patch("shutil.which")
-    def test_all_tools_present_no_keys(self, mock_which):
+    def test_all_tools_present_no_keys(self, mock_which, _mock_digg):
         """All CLI tools found, no API keys configured."""
         mock_which.side_effect = lambda cmd: f"/usr/bin/{cmd}"
         config = {}
@@ -26,9 +35,12 @@ class TestRunOpenclawSetup:
         assert result["python3"] is True
         assert all(v is False for v in result["keys"].values())
         assert result["x_method"] is None
+        assert result["digg_cli"] is False
+        assert result["digg_action"] == "no_npx"
 
+    @_patch_digg_noop
     @patch("shutil.which")
-    def test_missing_tools(self, mock_which):
+    def test_missing_tools(self, mock_which, _mock_digg):
         """Some CLI tools missing."""
         def which_side(cmd):
             if cmd == "node":
@@ -43,8 +55,9 @@ class TestRunOpenclawSetup:
         assert result["node"] is False
         assert result["python3"] is True
 
+    @_patch_digg_noop
     @patch("shutil.which")
-    def test_keys_detected(self, mock_which):
+    def test_keys_detected(self, mock_which, _mock_digg):
         """API keys in config are reported as present."""
         mock_which.return_value = None
         config = {
@@ -72,8 +85,9 @@ class TestRunOpenclawSetup:
         )
         assert expected in text
 
+    @_patch_digg_noop
     @patch("shutil.which")
-    def test_x_method_xai(self, mock_which):
+    def test_x_method_xai(self, mock_which, _mock_digg):
         """x_method is 'xai' when XAI_API_KEY is set."""
         mock_which.return_value = None
         config = {"XAI_API_KEY": "xai-key"}
@@ -82,8 +96,9 @@ class TestRunOpenclawSetup:
 
         assert result["x_method"] == "xai"
 
+    @_patch_digg_noop
     @patch("shutil.which")
-    def test_x_method_cookies(self, mock_which):
+    def test_x_method_cookies(self, mock_which, _mock_digg):
         """x_method is 'cookies' when AUTH_TOKEN + CT0 are set."""
         mock_which.return_value = None
         config = {"AUTH_TOKEN": "tok", "CT0": "ct0val"}
@@ -92,8 +107,9 @@ class TestRunOpenclawSetup:
 
         assert result["x_method"] == "cookies"
 
+    @_patch_digg_noop
     @patch("shutil.which")
-    def test_x_method_xai_over_cookies(self, mock_which):
+    def test_x_method_xai_over_cookies(self, mock_which, _mock_digg):
         """XAI takes priority over cookies for x_method."""
         mock_which.return_value = None
         config = {"XAI_API_KEY": "xai-key", "AUTH_TOKEN": "tok", "CT0": "ct0val"}
@@ -102,8 +118,9 @@ class TestRunOpenclawSetup:
 
         assert result["x_method"] == "xai"
 
+    @_patch_digg_noop
     @patch("shutil.which")
-    def test_x_method_null_when_nothing(self, mock_which):
+    def test_x_method_null_when_nothing(self, mock_which, _mock_digg):
         """x_method is None when no X access configured."""
         mock_which.return_value = None
         config = {}
@@ -112,8 +129,9 @@ class TestRunOpenclawSetup:
 
         assert result["x_method"] is None
 
+    @_patch_digg_noop
     @patch("shutil.which")
-    def test_output_is_json_serializable(self, mock_which):
+    def test_output_is_json_serializable(self, mock_which, _mock_digg):
         """Result can be serialized to JSON without errors."""
         mock_which.return_value = "/usr/bin/something"
         config = {"XAI_API_KEY": "k", "OPENAI_API_KEY": "ok"}
@@ -124,6 +142,37 @@ class TestRunOpenclawSetup:
 
         assert parsed["yt_dlp"] is True
         assert parsed["keys"]["xai"] is True
+
+    @patch("lib.setup_wizard._install_digg_cli")
+    @patch("shutil.which")
+    def test_digg_cli_on_path(self, mock_which, mock_digg_install):
+        """OpenClaw JSON reports digg_cli when PATH resolves digg-pp-cli."""
+        mock_which.side_effect = lambda cmd: f"/usr/bin/{cmd}"
+        mock_digg_install.return_value = (True, "already_installed", "", "")
+
+        result = setup_wizard.run_openclaw_setup({})
+
+        assert result["digg_cli"] is True
+        assert result["digg_action"] == "already_installed"
+        assert "digg_path" not in result
+
+    @patch("lib.setup_wizard._install_digg_cli")
+    @patch("shutil.which")
+    def test_digg_cli_off_path(self, mock_which, mock_digg_install):
+        """OpenClaw JSON surfaces off-PATH installs from prior pp-digg setup."""
+        mock_which.return_value = None
+        mock_digg_install.return_value = (
+            False,
+            "installed_off_path",
+            "",
+            "/Users/me/.local/bin/digg-pp-cli",
+        )
+
+        result = setup_wizard.run_openclaw_setup({})
+
+        assert result["digg_cli"] is False
+        assert result["digg_action"] == "installed_off_path"
+        assert result["digg_path"] == "/Users/me/.local/bin/digg-pp-cli"
 
 
 class TestRunDeviceAuth:

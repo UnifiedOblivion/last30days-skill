@@ -69,7 +69,7 @@ The project-scoped file is the cleanest pattern for **per-client setups**: drop 
 | Polymarket | none | always on | yes |
 | GitHub | `gh` CLI installed (uses your GitHub auth) | always on if `gh` present | yes |
 | YouTube | `yt-dlp` CLI installed | always on if `yt-dlp` present | yes |
-| Digg | `digg-pp-cli` on PATH (auto-installed during first-run setup; manual: `npx -y @mvanhorn/printing-press install digg --cli-only`, binary lands in `$HOME/go/bin`) | always on if `digg-pp-cli` present | yes (free, keyless, read-only) |
+| Digg | `digg-pp-cli` on PATH (auto-installed during first-run setup via `npx -y @mvanhorn/printing-press-library@0.1.16 install digg --cli-only`; binary defaults to `$HOME/.local/bin` — Hermes/OpenClaw agent subprocesses must inherit that dir on PATH for Digg to activate; prior pp-digg installs use the same path) | always on if `digg-pp-cli` on PATH | yes (free, keyless, read-only) |
 | X / Twitter | one of: `AUTH_TOKEN` + `CT0` (browser cookies, Bird CLI), `XAI_API_KEY`, `XQUIK_API_KEY`, `SCRAPECREATORS_API_KEY`, or `FROM_BROWSER` (cookie-jar auth) | X items in results | cookie-jar / Bird = free; Xquik / xAI / ScrapeCreators = key-based |
 | TikTok | `SCRAPECREATORS_API_KEY` + `INCLUDE_SOURCES` contains `tiktok` | TikTok items | 10K free calls |
 | Instagram | `SCRAPECREATORS_API_KEY` + `INCLUDE_SOURCES` contains `instagram` | Instagram Reels | 10K free calls; raise `LAST30DAYS_TRANSCRIPT_TIMEOUT` (default 30s) if SC is slow on your network |
