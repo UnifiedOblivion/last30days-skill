@@ -2006,7 +2006,7 @@ def _effective_fun_score(candidate, vote_weight: float) -> float:
     return base + vote_weight * confidence * vote_signal
 
 
-def _render_best_takes(candidates, limit=5, threshold=70.0, vote_weight=18.0):
+def _render_best_takes(candidates, limit=5, threshold=70.0, vote_weight=_FUN_LEVELS["medium"]["vote_weight"]):
     eligible = [
         c for c in candidates
         if c.fun_score is not None
@@ -2014,11 +2014,12 @@ def _render_best_takes(candidates, limit=5, threshold=70.0, vote_weight=18.0):
         and _best_take_relevance_ok(c)
     ]
     scored = [(c, _effective_fun_score(c, vote_weight)) for c in eligible]
-    gems = [c for c, eff in sorted(scored, key=lambda pair: -pair[1]) if eff >= threshold]
+    # Carry the effective score forward so the display loop doesn't recompute it.
+    gems = [(c, eff) for c, eff in sorted(scored, key=lambda pair: -pair[1]) if eff >= threshold]
     if len(gems) < 2:
         return []
     lines = ["## Best Takes", ""]
-    for candidate in gems[:limit]:
+    for candidate, effective in gems[:limit]:
         text = candidate.title.strip()
         for item in candidate.source_items:
             for comment in item.metadata.get("top_comments", [])[:3]:
@@ -2035,7 +2036,7 @@ def _render_best_takes(candidates, limit=5, threshold=70.0, vote_weight=18.0):
         # fun: is the LLM humor score; flag when crowd votes materially lifted
         # this item's ranking, so a lower-fun item ranking above a higher-fun one
         # reads correctly (it was crowd-boosted, not mis-ordered).
-        crowd_boost = _effective_fun_score(candidate, vote_weight) - (candidate.fun_score or 0.0)
+        crowd_boost = effective - (candidate.fun_score or 0.0)
         crowd_tag = " +crowd" if crowd_boost >= 5.0 else ""
         score_tag = f"(fun:{candidate.fun_score:.0f}{crowd_tag})"
         reason = f" -- {candidate.fun_explanation}" if candidate.fun_explanation and candidate.fun_explanation != "heuristic-fallback" else ""
