@@ -25,13 +25,21 @@ def parse_one(line: str) -> dict:
 
 class TestPriceFor(unittest.TestCase):
     def test_rate_card_provider(self):
-        self.assertEqual(cost_markers.price_for("scrapecreators"), 0.003)
+        self.assertAlmostEqual(cost_markers.price_for("scrapecreators"), 0.00188)
+
+    def test_validated_paid_api_rates(self):
+        """Spot-check rate card against vendor list prices (2026-06-17)."""
+        self.assertAlmostEqual(cost_markers.price_for("brave"), 5.0 / 1000)
+        self.assertAlmostEqual(cost_markers.price_for("exa"), 7.0 / 1000)
+        self.assertAlmostEqual(cost_markers.price_for("serper"), 1.0 / 1000)
+        self.assertAlmostEqual(cost_markers.price_for("parallel"), 5.0 / 1000)
+        self.assertAlmostEqual(cost_markers.price_for("scrapecreators"), 47.0 / 25000)
 
     def test_model_override_beats_provider(self):
         self.assertEqual(
-            cost_markers.price_for("perplexity", "sonar-deep-research"), 0.90
+            cost_markers.price_for("perplexity", "sonar-deep-research"), 1.00
         )
-        self.assertEqual(cost_markers.price_for("perplexity", "sonar-pro"), 0.008)
+        self.assertEqual(cost_markers.price_for("perplexity", "sonar-pro"), 0.010)
 
     def test_unknown_provider_is_zero(self):
         self.assertEqual(cost_markers.price_for("not-a-provider"), 0.0)
@@ -41,18 +49,18 @@ class TestEmitCost(unittest.TestCase):
     def test_emits_rate_card_price(self):
         buf = io.StringIO()
         cost = cost_markers.emit_cost("scrapecreators", model="reddit", stream=buf)
-        self.assertAlmostEqual(cost, 0.003)
+        self.assertAlmostEqual(cost, 0.00188)
         kv = parse_one(buf.getvalue())
         self.assertEqual(kv["provider"], "scrapecreators")
         self.assertEqual(kv["model"], "reddit")
         self.assertEqual(kv["calls"], "1")
-        self.assertAlmostEqual(float(kv["cost_usd"]), 0.003)
+        self.assertAlmostEqual(float(kv["cost_usd"]), 0.00188)
 
     def test_calls_multiplier(self):
         buf = io.StringIO()
         cost = cost_markers.emit_cost("exa", calls=3, stream=buf)
-        self.assertAlmostEqual(cost, 0.015)
-        self.assertAlmostEqual(float(parse_one(buf.getvalue())["cost_usd"]), 0.015)
+        self.assertAlmostEqual(cost, 0.021)
+        self.assertAlmostEqual(float(parse_one(buf.getvalue())["cost_usd"]), 0.021)
 
     def test_explicit_cost_overrides_rate_card(self):
         buf = io.StringIO()

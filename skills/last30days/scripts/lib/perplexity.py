@@ -54,7 +54,7 @@ def search(
     timeout = 120 if deep else 30
 
     if deep:
-        print("[Perplexity] Using Deep Research (~$0.90/query)", file=sys.stderr)
+        print("[Perplexity] Using Deep Research (~$1.00/query)", file=sys.stderr)
 
     prompt = (
         f"What has been happening with {query} between {from_date} and {to_date}? "

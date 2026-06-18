@@ -14,9 +14,15 @@ per-call paid APIs (ScrapeCreators credits, web-search backends, Perplexity), so
 cost is modeled PER CALL from a flat rate card rather than token-metered. Token
 fields stay 0; ``cost_usd`` carries the rate-card price for the call.
 
-Plan: docs/plans/2026-06-17-001-feat-measured-search-cost-markers-plan.md (U1).
+Reasoning-LLM entries are token-derived *estimates* (planner/rerank/fun JSON
+calls) because the clients do not surface usage metadata; they are near-zero vs
+paid search/social APIs but included for completeness.
+
+Rate card validated 2026-06-17 against vendor pricing pages (see inline sources).
 Cost accounting must NEVER break a research run: every function here is
 exception-safe and returns/does-nothing on bad input.
+
+Plan: docs/plans/2026-06-17-001-feat-measured-search-cost-markers-plan.md (U1).
 """
 
 from __future__ import annotations
@@ -25,23 +31,26 @@ import sys
 from typing import Optional, TextIO
 
 # ---------------------------------------------------------------------------
-# Rate card: USD charged per single call, by provider (and model where the
-# price varies by model). SEED ESTIMATES — real values are an Open Question in
-# the plan (confirm ScrapeCreators, search-vendor, and Perplexity pricing before
-# the live billed run). Centralized here so prices change without touching call
-# sites. Unknown providers price at 0 (a missing price never fabricates cost).
+# Rate card: USD per successful call. Paid APIs use published per-request /
+# per-credit list prices for the endpoints this engine actually calls.
+# Unknown providers price at 0 (a missing price never fabricates cost).
 # ---------------------------------------------------------------------------
 RATE_CARD: dict[str, float] = {
-    # ScrapeCreators: 1 credit per call; their credit price in USD. Dominant
-    # spend on social-heavy runs (Reddit/TikTok/Instagram/Threads/Pinterest/YT).
-    "scrapecreators": 0.003,
-    # Web-search backends — per query.
+    # ScrapeCreators: 1 credit per request. Freelance pack = $47 / 25,000 credits
+    # ($1.88/1k) — scrapecreators.com pricing, 2026-06-17.
+    "scrapecreators": 0.00188,
+    # Brave Search API: $5.00 / 1,000 web-search requests — Brave API pricing.
     "brave": 0.005,
-    "exa": 0.005,
+    # Exa: $7.00 / 1,000 search requests with contents (10 results + text).
+    # grounding.exa_search requests contents.text — exa.ai/pricing, 2026-06-17.
+    "exa": 0.007,
+    # Serper: $1.00 / 1,000 queries on the $50 starter pack — serper.dev.
+    # (Scale tier is $0.50/1k; starter is the conservative default.)
     "serper": 0.001,
+    # Parallel Search API: $5.00 / 1,000 requests (10 results + excerpts).
+    # docs.parallel.ai/getting-started/pricing, 2026-06-17.
     "parallel": 0.005,
-    # Reasoning LLMs — flat per call (no token data exposed). Near-zero vs the
-    # paid APIs above; included for completeness, priced low.
+    # Reasoning LLMs — flat per-call estimates (no token data exposed).
     "gemini": 0.0005,
     "openai": 0.0005,
     "xai": 0.0005,
@@ -50,9 +59,13 @@ RATE_CARD: dict[str, float] = {
 
 # Model-keyed overrides (provider:model) for cases where price varies by model.
 RATE_CARD_BY_MODEL: dict[str, float] = {
-    # Perplexity via OpenRouter: deep research is ~100x sonar-pro.
-    "perplexity:sonar-pro": 0.008,
-    "perplexity:sonar-deep-research": 0.90,
+    # Perplexity Sonar Pro via OpenRouter: low-context request fee $6/1k ($0.006)
+    # plus typical short-synthesis token cost — docs.perplexity.ai/guides/pricing.
+    # Rounded to $0.010/call as a flat settlement estimate.
+    "perplexity:sonar-pro": 0.010,
+    # Sonar Deep Research: Perplexity published examples run $0.41 (low) to
+    # $1.32 (high); $1.00/call is a mid-range flat estimate for settlement.
+    "perplexity:sonar-deep-research": 1.00,
 }
 
 
