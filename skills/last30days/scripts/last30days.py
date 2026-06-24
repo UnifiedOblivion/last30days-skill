@@ -635,7 +635,11 @@ def _propagate_config_to_environ(config: dict[str, object]) -> None:
 
 
 def _setup_allows_browser_cookies(args: argparse.Namespace, extra_argv: list[str]) -> bool:
-    return not args.no_browser_cookies and "--allow-browser-cookies" in extra_argv
+    return (
+        not args.no_browser_cookies
+        and not args.diagnose
+        and "--allow-browser-cookies" in extra_argv
+    )
 
 
 def _config_policy_for_args(args: argparse.Namespace, topic: str, extra_argv: list[str]) -> env.ConfigLoadPolicy:
