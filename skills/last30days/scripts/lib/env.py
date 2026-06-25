@@ -34,6 +34,13 @@ CODEX_AUTH_FILE = Path(os.environ.get("CODEX_AUTH_FILE", str(Path.home() / ".cod
 # Example: `security add-generic-password -a "$USER" -s last30days-XAI_API_KEY -w "xai-..."`.
 KEYCHAIN_SERVICE_PREFIX = "last30days-"
 
+# Optional non-secret aliases for users who already store API keys under a
+# different Keychain naming convention. Configure as JSON in
+# LAST30DAYS_KEYCHAIN_ALIASES, for example:
+# {"XAI_API_KEY":{"account":"keychain-user","service":"existing-xai-api-key"}}
+# A string value is shorthand for {"service": "..."} with the current user.
+KEYCHAIN_ALIASES_ENV = "LAST30DAYS_KEYCHAIN_ALIASES"
+
 # Single source of truth for which credentials the Keychain loader looks up.
 # The setup-keychain.sh helper mirrors this list and is held in sync via
 # tests/test_env_keychain.py::test_keychain_keys_match_setup_script.
@@ -153,13 +160,63 @@ def load_env_file(path: Path) -> dict[str, str]:
     return env
 
 
-def _load_keychain(keys: list[str]) -> dict[str, str]:
+def _parse_keychain_aliases(raw: str | None) -> dict[str, list[dict[str, str]]]:
+    """Parse non-secret Keychain alias metadata from JSON.
+
+    Supported forms:
+      {"XAI_API_KEY": "existing-xai-api-key"}
+      {"XAI_API_KEY": {"service": "existing-xai-api-key", "account": "keychain-user"}}
+      {"XAI_API_KEY": [{"service": "primary"}, {"service": "fallback"}]}
+
+    Invalid entries are ignored so a typo never blocks canonical
+    `last30days-<KEY>` lookups; malformed JSON emits a warning.
+    """
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        sys.stderr.write(
+            f"[last30days] WARNING: {KEYCHAIN_ALIASES_ENV} is not valid JSON; "
+            f"ignoring Keychain aliases while keeping canonical lookups enabled: {exc}\n"
+        )
+        sys.stderr.flush()
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+
+    allowed = set(KEYCHAIN_KEYS)
+    aliases: dict[str, list[dict[str, str]]] = {}
+    for key, spec in parsed.items():
+        if key not in allowed:
+            continue
+        specs = spec if isinstance(spec, list) else [spec]
+        clean_specs: list[dict[str, str]] = []
+        for item in specs:
+            if isinstance(item, str):
+                service = item.strip()
+                account = ""
+            elif isinstance(item, dict):
+                service = str(item.get("service", "")).strip()
+                account = str(item.get("account", "")).strip()
+            else:
+                continue
+            if service:
+                clean_specs.append({"service": service, "account": account})
+        if clean_specs:
+            aliases[key] = clean_specs
+    return aliases
+
+
+def _load_keychain(keys: list[str], aliases: dict[str, list[dict[str, str]]] | None = None) -> dict[str, str]:
     """Load credentials from macOS Keychain (no-op on other platforms).
 
     Each key is looked up as a generic password with service name
     ``f"{KEYCHAIN_SERVICE_PREFIX}{key}"`` for the current user. Missing items
-    and lookup failures are silent — Keychain is the lowest-priority source
-    and is meant to be additive over `.env` files and process environment.
+    then fall back to optional alias metadata from
+    ``LAST30DAYS_KEYCHAIN_ALIASES``. Lookup failures are silent — Keychain is
+    the lowest-priority source and is meant to be additive over `.env` files
+    and process environment.
     """
     import platform
     if platform.system() != "Darwin":
@@ -189,19 +246,32 @@ def _load_keychain(keys: list[str]) -> dict[str, str]:
         else:
             user = "unknown"
     env: dict[str, str] = {}
-    for key in keys:
+
+    def lookup(account: str, service: str) -> str:
         try:
             result = subprocess.run(
                 [security, "find-generic-password",
-                 "-a", user,
-                 "-s", f"{KEYCHAIN_SERVICE_PREFIX}{key}",
+                 "-a", account,
+                 "-s", service,
                  "-w"],
                 capture_output=True, text=True, timeout=5,
             )
         except (subprocess.TimeoutExpired, OSError):
-            continue
+            return ""
         if result.returncode == 0 and result.stdout.strip():
-            env[key] = result.stdout.strip()
+            return result.stdout.strip()
+        return ""
+
+    for key in keys:
+        value = lookup(user, f"{KEYCHAIN_SERVICE_PREFIX}{key}")
+        if not value and aliases:
+            for alias in aliases.get(key, []):
+                alias_account = alias.get("account") or user
+                value = lookup(alias_account, alias["service"])
+                if value:
+                    break
+        if value:
+            env[key] = value
     return env
 
 
@@ -393,7 +463,9 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
 
     # Keychain is the lowest-priority source (Darwin only; no-op elsewhere).
     # Loaded before openai_auth so OPENAI_API_KEY can come from Keychain too.
-    keychain_env = _load_keychain(list(KEYCHAIN_KEYS))
+    keychain_aliases_raw = os.environ.get(KEYCHAIN_ALIASES_ENV) or merged_env.get(KEYCHAIN_ALIASES_ENV)
+    keychain_aliases = _parse_keychain_aliases(keychain_aliases_raw)
+    keychain_env = _load_keychain(list(KEYCHAIN_KEYS), keychain_aliases)
     merged_env = {**keychain_env, **merged_env}
     # pass(1) store: Linux/Unix analog of Keychain at convention path
     # {prefix}<KEY>. Decrypts transiently so secrets stay encrypted at rest (no
@@ -481,6 +553,7 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         ('LAST30DAYS_DEFAULT_SEARCH', ''),
         ('LAST30DAYS_YOUTUBE_SSH_HOST', None),
         ('LAST30DAYS_TRANSCRIPT_TIMEOUT', None),
+        (KEYCHAIN_ALIASES_ENV, None),
         # Whisper transcription provider for caption-free audio/video. Groq's
         # free tier is preferred; OPENAI_API_KEY is the paid backstop (already
         # resolved above via openai_auth).

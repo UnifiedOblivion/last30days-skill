@@ -308,6 +308,8 @@ skills/last30days/scripts/setup-keychain.sh --delete XAI_API_KEY
 
 Items are stored under service name `last30days-<KEY>` for the current user. On non-Darwin platforms the loader is a no-op, so there is no behaviour change for Linux/Windows users.
 
+Already have keys under different Keychain service names? Set the non-secret `LAST30DAYS_KEYCHAIN_ALIASES` mapping described in [CONFIGURATION.md](CONFIGURATION.md#reusing-existing-macos-keychain-items) instead of copying secrets.
+
 See [CONFIGURATION.md](CONFIGURATION.md) for the full per-source key matrix, reasoning provider priority, and web-search backend priority.
 
 ## Configuration
