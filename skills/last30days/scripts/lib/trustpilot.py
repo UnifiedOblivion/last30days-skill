@@ -260,7 +260,11 @@ def _search_domain(topic: str) -> Optional[str]:
     if not isinstance(data, dict) or "error" in data:
         return None  # transient failure: retry on the next lookup
     hits = data.get("hits")
-    domain = _select_search_hit(topic, hits) if isinstance(hits, list) else None
+    if not isinstance(hits, list):
+        # Degenerate payload (e.g. empty stdout parses to {}): not a
+        # definitive no-match -- do not cache, retry on the next lookup.
+        return None
+    domain = _select_search_hit(topic, hits)
     if domain:
         _log(f"resolved '{topic}' -> '{domain}' via search")
     with _domain_cache_lock:
@@ -408,10 +412,12 @@ def search_trustpilot(
     if not _harvest_allowed(config):
         _log("skipped: browser opt-out set")
         return {"results": []}
-    started = time.monotonic()
     # Serialized session check at first source touch (all gates above have
     # passed, so this never fires for topics the source would not fetch).
     ensure_session_ready(topic, config=config, has_domain=bool(explicit_domain))
+    # Retry-budget timer starts AFTER the warm-up: a slow Chrome harvest must
+    # not consume the hint-retry budget when the info call itself was fast.
+    started = time.monotonic()
     if explicit_domain:
         identifier = explicit_domain
     else:

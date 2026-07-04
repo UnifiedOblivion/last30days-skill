@@ -453,3 +453,24 @@ def test_transient_search_error_not_cached(monkeypatch):
     assert trustpilot._search_domain("ThriftBooks") is None
     assert trustpilot._search_domain("ThriftBooks") == "www.thriftbooks.com"
     assert len(_search_args(calls)) == 2
+
+
+def test_empty_search_payload_not_cached(monkeypatch):
+    # Empty stdout parses to {} (exit 0, no output): a degenerate payload,
+    # not a definitive no-match -- it must not become a permanent cache entry.
+    calls = _capture_cli(monkeypatch, {
+        "search": [{}, dict(THRIFTBOOKS_HITS)],
+        "info": INFO_OK,
+    })
+    assert trustpilot._search_domain("ThriftBooks") is None
+    assert trustpilot._search_domain("ThriftBooks") == "www.thriftbooks.com"
+    assert len(_search_args(calls)) == 2
+
+
+def test_definitive_no_match_is_cached(monkeypatch):
+    # A well-formed empty hits list IS definitive: cache it so repeat lookups
+    # for a name Trustpilot does not know cost one subprocess, not N.
+    calls = _capture_cli(monkeypatch, {"search": {"hits": []}, "info": INFO_OK})
+    assert trustpilot._search_domain("ChowNow") is None
+    assert trustpilot._search_domain("ChowNow") is None
+    assert len(_search_args(calls)) == 1
