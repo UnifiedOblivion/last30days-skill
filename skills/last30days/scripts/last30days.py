@@ -1000,8 +1000,16 @@ def main() -> int:
             # run, and mask it in stdout so the secret never lands in the host
             # model's captured Bash output.
             api_key = results.get("api_key")
-            if results.get("status") == "success" and api_key:
-                results["persisted"] = setup_wizard.write_api_key(env.CONFIG_FILE, api_key)
+            status = results.get("status")
+            if api_key:
+                if status == "success":
+                    results["persisted"] = setup_wizard.write_api_key(env.CONFIG_FILE, api_key)
+                elif status == "already_registered":
+                    results["persisted"] = True  # key was already saved
+                else:
+                    results.setdefault("persisted", False)
+                # Mask for EVERY status that carries a key, not just success, so
+                # the raw secret never reaches the host model's captured stdout.
                 results["api_key"] = setup_wizard.mask_api_key(api_key)
             else:
                 results["persisted"] = False
@@ -1021,6 +1029,12 @@ def main() -> int:
         # silently skip the service that used the other one).
         found_browsers = set(results.get("cookies_found", {}).values())
         from_browser = found_browsers.pop() if len(found_browsers) == 1 else None
+        # Pin only a silent winner (firefox/safari). Pinning a Chromium browser
+        # would make every steady-state run re-read its Keychain-encrypted store
+        # and can re-trigger the "Always Allow" prompt, so Chrome is used for the
+        # first-run scan but never pinned.
+        if from_browser in {"chrome", "brave", "edge", "vivaldi", "opera", "arc", "chromium"}:
+            from_browser = None
         setup_wizard.write_setup_config(env.CONFIG_FILE, from_browser=from_browser)
         results["env_written"] = True
         sys.stderr.write(setup_wizard.get_setup_status_text(results) + "\n")

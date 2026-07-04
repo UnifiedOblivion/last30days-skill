@@ -56,7 +56,7 @@ class TestOnboardingContract(unittest.TestCase):
             "Welcome to /last30days!",
             "How would you like to set up?",
             "scan your browser",  # cookie-consent modal
-            "Want to add TikTok, Instagram, and the ScrapeCreators backups?",  # SC offer
+            "Want to add TikTok and Instagram?",  # SC offer
             "Which ScrapeCreators sources do you want on?",  # source opt-in
             "What do you want to research first?",  # topic picker
         ]
@@ -138,14 +138,66 @@ class TestOnboardingContract(unittest.TestCase):
         self.assertNotIn("1000 credits", self.step0)
         self.assertNotIn("100 free call", self.step0)
 
-    # --- Threads/Pinterest kept out of the onboarding offers ---
+    # --- Threads/Pinterest live ONLY in the Step 5 "Everything" opt-in ---
 
-    def test_threads_pinterest_absent_from_modal_and_prose(self):
-        """They stay a power-user INCLUDE_SOURCES note in the manual guide only."""
-        self.assertNotIn("Threads", self.modal)
-        self.assertNotIn("Pinterest", self.modal)
-        self.assertNotIn("Threads", self.prose)
-        self.assertNotIn("Pinterest", self.prose)
+    def _modal_step5(self):
+        start = self.modal.index("**Step 5:")
+        end = self.modal.index("**Step 6:", start)
+        return self.modal[start:end]
+
+    def _modal_before_step5(self):
+        # Welcome (Step 1) through the Step 4 ScrapeCreators offer.
+        return self.modal[: self.modal.index("**Step 5:")]
+
+    def test_threads_pinterest_only_in_step5_everything(self):
+        """Threads/Pinterest are offered in the Step 5 Everything tier, and
+
+        must NOT appear in the welcome or the Step 4 offer (where they would
+        read as default-on). They are opt-in via INCLUDE_SOURCES.
+        """
+        step5 = self._modal_step5()
+        self.assertIn("Threads", step5)
+        self.assertIn("Pinterest", step5)
+        before = self._modal_before_step5()
+        self.assertNotIn("Threads", before)
+        self.assertNotIn("Pinterest", before)
+
+    def test_everything_tier_writes_full_include_sources(self):
+        """The Everything option persists the full opt-in list (incl. tiktok,instagram)."""
+        step5 = self._modal_step5()
+        self.assertIn("INCLUDE_SOURCES=tiktok,instagram,threads,pinterest,youtube_comments,tiktok_comments", step5)
+
+    # --- Chrome-first cookie scan (U2/U3) ---
+
+    def test_cookie_consent_leads_with_chrome(self):
+        """Both flows tell the user Chrome is checked first, with the Keychain cue."""
+        for slice_name, slice_text in (("modal", self.modal), ("prose", self.prose)):
+            self.assertIn("Chrome", slice_text, f"{slice_name} cookie copy omits Chrome")
+            self.assertIn("Always Allow", slice_text, f"{slice_name} omits the Keychain cue")
+
+    def test_fda_reframed_as_safari_fallback(self):
+        """Full Disk Access is framed as Safari-only, not the default path."""
+        self.assertNotIn("scan your browser (Firefox/Safari)", self.modal)
+
+    def test_stocktwits_surfaced_as_conditional(self):
+        """StockTwits is advertised in the welcome as a ticker/crypto-gated source."""
+        self.assertIn("StockTwits", self.modal)
+
+    # --- Honest GitHub device-code copy (U4/U7) ---
+
+    def test_no_false_instant_gh_promise(self):
+        """The '~2 seconds - no browser' claim (a nonexistent code path) is gone."""
+        self.assertNotIn("~2 seconds - no browser", self.step0)
+        self.assertNotIn("Registers via GitHub CLI in ~2 seconds", self.step0)
+
+    def test_device_code_surfacing_orchestration_present(self):
+        """Both flows must surface the device code, not block on a spinner."""
+        self.assertIn("device_code_ready", self.modal)
+        self.assertIn("device_code_ready", self.prose)
+
+    def test_already_registered_status_handled(self):
+        self.assertIn("already_registered", self.modal)
+        self.assertIn("already_registered", self.prose)
 
     # --- Legacy guarantees retained ---
 
