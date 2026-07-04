@@ -402,3 +402,54 @@ def test_trustpilot_capped_to_single_fetch():
     # stream would use the identical company identifier, and each extra one
     # risks its own WAF-cookie Chrome harvest.
     assert pipeline.MAX_SOURCE_FETCHES.get("trustpilot") == 1
+
+
+# ---- review-driven hardening ----
+
+def test_search_trustpilot_warms_session_at_first_touch(monkeypatch):
+    # The warm-up runs inside the source fetch (never the pipeline fan-out
+    # setup), so it must precede the info call within one search invocation.
+    calls = _capture_cli(monkeypatch, {
+        "auth status": {"isFresh": True},
+        "info": INFO_OK,
+    })
+    trustpilot.search_trustpilot(
+        "ThriftBooks", D1, D2, explicit_domain="www.thriftbooks.com")
+    assert calls[0][1] == "auth" and calls[0][2] == "status"
+    assert [c for c in calls if c[1] == "info"]
+
+
+def test_warmup_ttl_lapse_rechecks(monkeypatch):
+    import time as _time
+    calls = _capture_cli(monkeypatch, {"auth status": {"isFresh": True}})
+    trustpilot.ensure_session_ready("ThriftBooks")
+    assert len(calls) == 1
+    # Within the TTL: no re-check.
+    trustpilot.ensure_session_ready("ThriftBooks")
+    assert len(calls) == 1
+    # After the TTL lapses (long-lived host process): cheap re-check fires.
+    trustpilot._warmup_at = _time.monotonic() - (trustpilot.WARMUP_TTL_SECONDS + 1)
+    trustpilot.ensure_session_ready("ThriftBooks")
+    assert len(calls) == 2
+
+
+def test_hint_on_non_brand_topic_stays_quiet(monkeypatch):
+    # An auto-resolved hint must not widen activation beyond brand-shaped
+    # topics -- only a USER-set domain proves brand intent (AE6 contract).
+    calls = _capture_cli(monkeypatch, {})
+    out = trustpilot.search_trustpilot(
+        "AI coding agents", D1, D2,
+        explicit_domain="aicodingagents.com", domain_is_hint=True)
+    assert out == {"results": []}
+    assert calls == []
+
+
+def test_transient_search_error_not_cached(monkeypatch):
+    # A flaky search must not poison the per-topic cache for the process.
+    calls = _capture_cli(monkeypatch, {
+        "search": [{"error": "timeout"}, dict(THRIFTBOOKS_HITS)],
+        "info": INFO_OK,
+    })
+    assert trustpilot._search_domain("ThriftBooks") is None
+    assert trustpilot._search_domain("ThriftBooks") == "www.thriftbooks.com"
+    assert len(_search_args(calls)) == 2

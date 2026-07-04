@@ -488,17 +488,11 @@ def run(
         except Exception as exc:
             bundle.errors_by_source["github"] = f"Person-mode failed: {exc}"
 
-    # Trustpilot session pre-flight: one serialized WAF-session check before
-    # the fan-out, so parallel streams (and concurrent vs-mode sub-runs) never
-    # race their own Chrome harvests. No-op on non-brand topics and when the
-    # browser opt-out is set; the helper never raises.
-    if "trustpilot" in available and not mock:
-        try:
-            trustpilot.ensure_session_ready(
-                topic, config=config, has_domain=bool(trustpilot_domain)
-            )
-        except Exception as exc:  # pragma: no cover - defensive belt
-            bundle.errors_by_source.setdefault("trustpilot", f"warm-up failed: {exc}")
+    # Trustpilot session warm-up happens inside search_trustpilot at the
+    # first (capped, single) fetch -- lazily, so it never delays the other
+    # sources' streams and never fires for runs whose plan fetches no
+    # Trustpilot. The module-level lock in lib/trustpilot.py serializes
+    # concurrent vs-mode sub-runs so they never race Chrome harvests.
 
     # Thread-safe set prevents redundant fetches after a source returns 429
     rate_limited_sources: set[str] = set()
@@ -1133,7 +1127,12 @@ def _retry_thin_sources(
         for source in subquery.sources:
             if source not in planned_sources:
                 planned_sources.append(source)
-    _skip = skip_sources or set()
+    # trustpilot returns at most ONE item by design, so the "<3 items" rule
+    # would re-fetch it after every successful lookup -- bypassing
+    # MAX_SOURCE_FETCHES and re-resolving WITHOUT the caller's
+    # --trustpilot-domain (a lookalike-misattribution path). Its thin result
+    # is its normal success state; never retry it here.
+    _skip = (skip_sources or set()) | {"trustpilot"}
     thin_sources = [
         source
         for source in planned_sources

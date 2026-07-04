@@ -853,7 +853,7 @@ WebSearch("{TOPIC} official site")
 
 Pass to the CLI: `--trustpilot-domain={domain}` (e.g., `--trustpilot-domain=www.thriftbooks.com`)
 
-The flag is used verbatim and bypasses the engine's brand-shape gate, so it also unlocks Trustpilot for multi-word company names ("Stanley Steemer carpet cleaning"). For comparisons, put a per-entity `trustpilot_domain` in each entity's `--competitors-plan` entry instead.
+The flag is used verbatim and bypasses the engine's brand-shape gate, so it also unlocks Trustpilot for multi-word company names ("Stanley Steemer carpet cleaning"). For comparisons, put a per-entity `trustpilot_domain` in each PEER entity's `--competitors-plan` entry; the MAIN topic's domain must ride the outer `--trustpilot-domain` flag (the engine does not read a main-topic entry out of the plan).
 
 **A miss is not fatal.** When the flag is absent, the engine resolves name → domain itself via the CLI's search (and headless `--auto-resolve` runs fill a hint the engine verifies). Resolve the flag when the domain is already in hand or the company name is ambiguous (lookalike or same-named companies) — an explicit domain is the only way to guarantee the right company.
 
@@ -956,7 +956,7 @@ PLAN_EOF
 
 **Keep the heredoc marker quoted as `'PLAN_EOF'`.** Quoting suppresses shell interpolation so apostrophes, `$`, backticks, etc. pass through verbatim. If you ever switch to an unquoted `<<PLAN_EOF`, every variable reference and apostrophe inside the JSON becomes a parse hazard.
 
-Topic A (the main topic, first in the vs-string) uses outer `--x-handle`, `--x-related`, `--subreddits`, `--github-user`, `--github-repo`, `--tiktok-*`, `--ig-creators` as usual. Topics B and C get their targeting from `--competitors-plan` entries (keyed by entity name, case-insensitive).
+Topic A (the main topic, first in the vs-string) uses outer `--x-handle`, `--x-related`, `--subreddits`, `--github-user`, `--github-repo`, `--trustpilot-domain`, `--tiktok-*`, `--ig-creators` as usual. Topics B and C get their targeting from `--competitors-plan` entries (keyed by entity name, case-insensitive) — the engine does NOT read a main-topic entry out of the plan, so the main topic's Trustpilot domain must ride the outer flag.
 
 **Step 0.55 for N entities.** The same pre-research protocol that applies to a single-entity topic applies to EACH entity in a vs-run. For N=3, that means 3 WebSearches for X handles, 3 for subreddits, 3 for GitHub, 3 for news context — or equivalent batched queries. A `## Resolved Entities` block with dashes for any entity means you skipped Step 0.55 for that one. Re-run with a corrected plan.
 
@@ -1111,6 +1111,7 @@ Per-entity lookup types to resolve:
 2. **Project GitHub repo** - `owner/repo` format (e.g., `openai/openai-python`)
 3. **Founder/maintainer X handle** - the person or team behind the project
 4. **Relevant subreddits** - project-specific subreddits (e.g., `r/openclaw`) AND general-category subreddits (e.g., `r/LocalLLaMA`)
+5. **Trustpilot domain** (only when the Trustpilot source is active and the entity is a company/brand/service) - the entity's Trustpilot review-page domain per Step 0.5d; peers carry it as `trustpilot_domain` in their `--competitors-plan` entry, the main topic via the outer `--trustpilot-domain` flag
 
 Example batching for "OpenClaw vs Hermes vs Paperclip":
 
@@ -1307,6 +1308,7 @@ Then add to the engine command:
 - `--ig-creators={RESOLVED_IG_CREATORS}` (from Step 0.55)
 - `--github-user={RESOLVED_GITHUB_USER}` (from Step 0.5b, person topics only)
 - `--github-repo={RESOLVED_GITHUB_REPOS}` (from Step 0.5c, product/project topics only)
+- `--trustpilot-domain={RESOLVED_TRUSTPILOT_DOMAIN}` (from Step 0.5d, company/brand topics when the Trustpilot source is active)
 - Omit any flag where the value was not resolved (empty).
 
 **If you skipped Steps 0.55 and 0.75 (no WebSearch -- OpenClaw, Codex, etc.), add:**

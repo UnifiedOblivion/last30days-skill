@@ -42,6 +42,7 @@ import os
 import re
 import shutil
 import threading
+import time
 from typing import Any, Dict, List, Optional
 
 from . import dates, log, subproc
@@ -165,15 +166,25 @@ _domain_cache: Dict[str, Optional[str]] = {}
 _domain_cache_lock = threading.Lock()
 
 _warmup_lock = threading.Lock()
-_warmup_done = False
+_warmup_at: Optional[float] = None  # time.monotonic() of the last warm-up
+
+# Warm-up freshness window, matching the CLI's ~4-minute safe replay bound for
+# WAF tokens. A boolean-forever flag would leave long-lived host processes
+# running stale (and never retrying a failed login); the TTL re-checks cheaply
+# via `auth status` once the window lapses.
+WARMUP_TTL_SECONDS = 240
 
 
 def _reset_state_for_tests() -> None:
     """Clear module-level caches/flags (tests only)."""
-    global _warmup_done
+    global _warmup_at
     with _domain_cache_lock:
         _domain_cache.clear()
-    _warmup_done = False
+    _warmup_at = None
+
+
+def _warmup_fresh() -> bool:
+    return _warmup_at is not None and (time.monotonic() - _warmup_at) < WARMUP_TTL_SECONDS
 
 
 def _select_search_hit(topic: str, hits: List[Any]) -> Optional[str]:
@@ -231,8 +242,10 @@ def _search_domain(topic: str) -> Optional[str]:
     """Resolve a company name to its Trustpilot domain via the CLI's search.
 
     Cached per normalized topic (thread-safe), so repeat lookups cost one
-    subprocess while vs-mode entities still resolve independently. Returns
-    None (also cached) when the search errors or no hit meets the bar.
+    subprocess while vs-mode entities still resolve independently. Only
+    definitive results are cached: a transient CLI failure (timeout, spawn
+    error, malformed JSON) returns None WITHOUT caching, so one flaky search
+    does not suppress resolution for this topic for the rest of the process.
     """
     key = _normalize_name(topic)
     if not key:
@@ -244,11 +257,10 @@ def _search_domain(topic: str) -> Optional[str]:
         [CLI_BIN, "search", topic.strip(), "--limit", "5", "--agent"],
         timeout=SEARCH_TIMEOUT,
     )
-    domain: Optional[str] = None
-    if isinstance(data, dict) and "error" not in data:
-        hits = data.get("hits")
-        if isinstance(hits, list):
-            domain = _select_search_hit(topic, hits)
+    if not isinstance(data, dict) or "error" in data:
+        return None  # transient failure: retry on the next lookup
+    hits = data.get("hits")
+    domain = _select_search_hit(topic, hits) if isinstance(hits, list) else None
     if domain:
         _log(f"resolved '{topic}' -> '{domain}' via search")
     with _domain_cache_lock:
@@ -276,20 +288,24 @@ def ensure_session_ready(
     config: Optional[Dict[str, Any]] = None,
     has_domain: bool = False,
 ) -> None:
-    """Warm the CLI's WAF session once per process, before the search fan-out.
+    """Warm the CLI's WAF session, serialized, at the first Trustpilot fetch.
 
-    Serialized behind a module lock so concurrent ``pipeline.run`` calls
-    (vs-mode fans out up to 6 sub-runs) never race their own Chrome harvests.
-    Skips entirely for topics the source would never fetch (brand-shape gate,
-    unless an explicit/resolved domain proves brand intent), so generic topics
-    never launch a browser. ``auth login`` fires only when ``auth status``
-    reports the session missing or stale -- login always harvests (~10s
-    Chrome), it has no freshness no-op. Logs only structured status strings;
-    the raw CLI payload carries live WAF-token prefixes and must never be
-    logged. Never raises.
+    Called from ``search_trustpilot`` (never from the pipeline's fan-out
+    setup), so it only ever delays the one capped Trustpilot stream, never
+    the other sources -- and never fires for runs whose plan fetches no
+    Trustpilot at all. The module lock serializes concurrent streams (vs-mode
+    fans out up to 6 entity sub-runs) so they never race their own Chrome
+    harvests. Freshness is a monotonic TTL (WARMUP_TTL_SECONDS, matching the
+    CLI's ~4-minute token bound), not a boolean-forever flag: long-lived host
+    processes re-check via ``auth status`` after the window lapses, which
+    also retries a previously failed login. ``auth login`` fires only when
+    ``auth status`` reports the session missing or stale -- login always
+    harvests (~10s Chrome), it has no freshness no-op. Logs only structured
+    status strings; the raw CLI payload carries live WAF-token prefixes and
+    must never be logged. Never raises.
     """
-    global _warmup_done
-    if _warmup_done:
+    global _warmup_at
+    if _warmup_fresh():
         return
     if not _is_available():
         return
@@ -298,14 +314,14 @@ def ensure_session_ready(
     if not has_domain and not is_brand_shaped(topic):
         return
     with _warmup_lock:
-        if _warmup_done:
+        if _warmup_fresh():
             return
         status = _run_cli(
             [CLI_BIN, "auth", "status", "--agent"], timeout=AUTH_STATUS_TIMEOUT
         )
         if _is_session_fresh(status):
             _log("warm-up: fresh")
-            _warmup_done = True
+            _warmup_at = time.monotonic()
             return
         # Missing session exits non-zero (an error dict here): that is the
         # "login needed" signal, not a warm-up failure.
@@ -314,7 +330,10 @@ def ensure_session_ready(
             _log("warm-up failed: auth login did not complete")
         else:
             _log("warm-up: harvested")
-        _warmup_done = True
+        # Stamp even on failure: a broken Chrome will not fix itself within
+        # the TTL, per-call CLI auto-harvest remains the fallback, and the
+        # TTL lapse retries the warm-up later.
+        _warmup_at = time.monotonic()
 
 
 def _run_cli(cmd: List[str], timeout: int) -> Dict[str, Any]:
@@ -376,13 +395,23 @@ def search_trustpilot(
     opt-out is set, or the CLI fails.
     """
     explicit_domain = (explicit_domain or "").strip() or None
-    if not explicit_domain and not is_brand_shaped(topic):
+    user_domain = bool(explicit_domain) and not domain_is_hint
+    # Only a USER-set domain proves brand intent and bypasses the brand-shape
+    # gate. An auto-resolved hint must not widen activation beyond
+    # brand-shaped topics, or a generic topic that happens to yield a hint
+    # would trigger a Chrome harvest -- violating the module's documented
+    # "never harvests on non-company topics" contract.
+    if not user_domain and not is_brand_shaped(topic):
         return {"results": []}
     if not _is_available():
         return {"results": [], "error": f"{CLI_BIN} not on PATH"}
     if not _harvest_allowed(config):
         _log("skipped: browser opt-out set")
         return {"results": []}
+    started = time.monotonic()
+    # Serialized session check at first source touch (all gates above have
+    # passed, so this never fires for topics the source would not fetch).
+    ensure_session_ready(topic, config=config, has_domain=bool(explicit_domain))
     if explicit_domain:
         identifier = explicit_domain
     else:
@@ -396,10 +425,14 @@ def search_trustpilot(
     if ("error" in data or not data) and explicit_domain and domain_is_hint:
         # The auto-resolved hint missed. Only user-set flags are
         # verbatim-final; a hint falls through to the search resolution.
-        resolved = _search_domain(topic)
-        if resolved and resolved != identifier:
-            _log(f"hint '{identifier}' missed; retrying via search as '{resolved}'")
-            data = _run_cli(_build_info_args(resolved), timeout=SEARCH_TIMEOUT)
+        # Skip the retry chain when the first lookup already consumed a full
+        # single-call budget (hung CLI) -- one stream must not chain three
+        # sequential SEARCH_TIMEOUT-bound subprocesses.
+        if time.monotonic() - started < SEARCH_TIMEOUT:
+            resolved = _search_domain(topic)
+            if resolved and resolved != identifier:
+                _log(f"hint '{identifier}' missed; retrying via search as '{resolved}'")
+                data = _run_cli(_build_info_args(resolved), timeout=SEARCH_TIMEOUT)
     if "error" in data or not data:
         return {"results": []}
     return {"results": [data]}
