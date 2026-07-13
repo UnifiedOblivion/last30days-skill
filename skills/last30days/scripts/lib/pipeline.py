@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from shutil import which
@@ -597,6 +598,79 @@ def nominate_candidates(
     return bundle
 
 
+@dataclass(frozen=True)
+class Nomination:
+    """A named candidate topic produced by the nominate stage.
+
+    ``seed_score`` is the cheap pre-enrichment velocity rank - enough to decide
+    WHICH candidates deserve a full pipeline pass, but not the final ranking
+    signal (that comes from enriched evidence downstream).
+    """
+
+    name: str
+    seed_score: float
+    items: list[schema.SourceItem] = field(default_factory=list)
+    summary: str = ""
+
+
+def nominate_topics(
+    bundle: schema.RetrievalBundle,
+    query_plan: schema.QueryPlan,
+    plan: schema.DiscoveryPlan,
+    *,
+    to_date: str,
+    limit: int,
+) -> list[Nomination]:
+    """Stage 1b of discovery: cluster nominated items into named candidate
+    topics and rank them by seed velocity.
+
+    Names are deduped casefold so the same story surfacing under two clusters
+    yields one nomination. Returns at most ``limit`` nominations, never padded -
+    fewer clusters than ``limit`` means a shorter list, and the confidence
+    floor downstream decides whether what survived is worth showing.
+    """
+    candidates = weighted_rrf(bundle.items_by_source_and_query, query_plan, pool_limit=80)
+    for candidate in candidates:
+        velocity = rerank.discovery_velocity_score(candidate.source_items, as_of_date=to_date)
+        candidate.final_score = min(100.0, 12.0 * math.log1p(velocity)) if velocity else 0.0
+    candidates.sort(key=lambda candidate: (-candidate.final_score, candidate.title.lower()))
+    clusters = cluster_candidates(candidates, query_plan)
+    candidate_map = {candidate.candidate_id: candidate for candidate in candidates}
+
+    ranked_clusters: list[tuple[float, schema.Cluster, list[schema.SourceItem]]] = []
+    for cluster in clusters:
+        cluster_items: list[schema.SourceItem] = []
+        for candidate_id in cluster.candidate_ids:
+            candidate = candidate_map.get(candidate_id)
+            if candidate:
+                cluster_items.extend(candidate.source_items)
+        score = rerank.discovery_velocity_score(cluster_items, as_of_date=to_date)
+        if score <= 0:
+            continue
+        ranked_clusters.append((score, cluster, cluster_items))
+    ranked_clusters.sort(key=lambda entry: (-entry[0], entry[1].title.lower()))
+
+    nominations: list[Nomination] = []
+    seen_topic_names: set[str] = set()
+    for score, cluster, cluster_items in ranked_clusters:
+        name = discovery_topic_name(cluster, candidate_map, plan.domain)
+        name_key = name.casefold()
+        if name_key in seen_topic_names:
+            continue
+        seen_topic_names.add(name_key)
+        leader = candidate_map.get(cluster.representative_ids[0]) if cluster.representative_ids else None
+        summary = (leader.snippet if leader else "") or (leader.title if leader else name)
+        nominations.append(Nomination(
+            name=name,
+            seed_score=score,
+            items=cluster_items,
+            summary=summary,
+        ))
+        if len(nominations) >= limit:
+            break
+    return nominations
+
+
 def run_discover(
     *,
     domain: str,
@@ -672,62 +746,36 @@ def run_discover(
         )
     source_status.update(_finalize_source_status(bundle.source_status, bundle.items_by_source))
 
-    candidates = weighted_rrf(bundle.items_by_source_and_query, query_plan, pool_limit=80)
-    for candidate in candidates:
-        velocity = rerank.discovery_velocity_score(candidate.source_items, as_of_date=to_date)
-        candidate.final_score = min(100.0, 12.0 * math.log1p(velocity)) if velocity else 0.0
-    candidates.sort(key=lambda candidate: (-candidate.final_score, candidate.title.lower()))
-    clusters = cluster_candidates(candidates, query_plan)
-    candidate_map = {candidate.candidate_id: candidate for candidate in candidates}
-
-    ranked_clusters: list[tuple[float, schema.Cluster, list[schema.SourceItem]]] = []
-    for cluster in clusters:
-        cluster_items: list[schema.SourceItem] = []
-        for candidate_id in cluster.candidate_ids:
-            candidate = candidate_map.get(candidate_id)
-            if candidate:
-                cluster_items.extend(candidate.source_items)
-        score = rerank.discovery_velocity_score(cluster_items, as_of_date=to_date)
-        if score <= 0:
-            continue
-        ranked_clusters.append((score, cluster, cluster_items))
-    ranked_clusters.sort(key=lambda entry: (-entry[0], entry[1].title.lower()))
-
     topic_limit = max(5, min(10, limit))
+    nominations = nominate_topics(
+        bundle, query_plan, plan, to_date=to_date, limit=topic_limit,
+    )
+
     topics: list[schema.DiscoveryTopic] = []
-    seen_topic_names: set[str] = set()
-    for score, cluster, cluster_items in ranked_clusters:
-        name = discovery_topic_name(cluster, candidate_map, plan.domain)
-        name_key = name.casefold()
-        if name_key in seen_topic_names:
-            continue
-        seen_topic_names.add(name_key)
+    for nomination in nominations:
+        cluster_items = nomination.items
         rank = len(topics) + 1
         sources = sorted({item.source for item in cluster_items})
         native_total = sum(rerank.discovery_engagement_total(item) for item in cluster_items)
         source_phrase = ", ".join(sources[:-1]) + (
             f" and {sources[-1]}" if len(sources) > 1 else (sources[0] if sources else "the listings")
         )
-        leader = candidate_map.get(cluster.representative_ids[0]) if cluster.representative_ids else None
-        summary = (leader.snippet if leader else "") or (leader.title if leader else name)
         why = (
             f"{len(cluster_items)} listing item{'s' if len(cluster_items) != 1 else ''} on "
             f"{source_phrase} generated {native_total:,.0f} native interactions. "
-            f"{summary[:220]}"
+            f"{nomination.summary[:220]}"
         )
         topics.append(schema.DiscoveryTopic(
             rank=rank,
-            name=name,
+            name=nomination.name,
             why_spiking=why,
             momentum=_discovery_momentum(cluster_items, to_date),
-            velocity_score=round(score, 2),
+            velocity_score=round(nomination.seed_score, 2),
             sources=sources,
             engagement_by_source=_discovery_engagement(cluster_items),
-            command=f'/last30days "{name.replace(chr(34), chr(39))}"',
+            command=f'/last30days "{nomination.name.replace(chr(34), chr(39))}"',
             evidence_urls=list(dict.fromkeys(item.url for item in cluster_items if item.url))[:5],
         ))
-        if len(topics) >= topic_limit:
-            break
 
     warnings: list[str] = []
     if len(topics) < 5:
