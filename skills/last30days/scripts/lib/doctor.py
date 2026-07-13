@@ -178,6 +178,33 @@ def _finding_json(finding: backends.BackendFinding) -> Dict[str, Any]:
     }
 
 
+def _host_native_web_note(config: Dict[str, Any]) -> str:
+    """Doctor-local note when the host's own web search serves this run.
+
+    Keys on LAST30DAYS_NATIVE_SEARCH (via env.is_native_search) AND on
+    CLAUDECODE as a host signal - Claude Code always exposes a web-search tool,
+    but `doctor` run in a plain shell never sees the LAST30DAYS_NATIVE_SEARCH
+    the engine exports only for its own run, so without the CLAUDECODE signal it
+    would mislabel a fine setup as "degraded/keyless". Messaging only: it does
+    not change env.is_native_search or the engine's keyless-floor behavior. The
+    note names the signal actually detected so it never cites an env var the
+    user did not set.
+    """
+    if env.is_native_search(config):
+        return (
+            "host-native search active (LAST30DAYS_NATIVE_SEARCH): the host's "
+            "own web search serves this run; set a web key only if you want "
+            "engine-side web search"
+        )
+    if config.get("CLAUDECODE") or os.environ.get("CLAUDECODE"):
+        return (
+            "host-native web search active (Claude Code): the host's own web "
+            "search serves this run; set a web key only if you want "
+            "engine-side web search"
+        )
+    return ""
+
+
 def _chained_record(source: str, config: Dict[str, Any]) -> Dict[str, Any]:
     descriptor = backends.get_descriptor(source)
     res = backends.resolve(source, config)
@@ -202,6 +229,23 @@ def _chained_record(source: str, config: Dict[str, Any]) -> Dict[str, Any]:
         active = by_name.get(res.active_backend)
         return _record(status=health.OK, note=res.summary,
                        requires=active.requires if active else "", **common)
+
+    # Doctor-local (KTD-3): on a host that brings its own web search, the
+    # engine's web lanes (keyless floor or nothing configured) are intentionally
+    # dormant - report that, not an alarming "degraded/keyless". This must run
+    # before the WARN branch, because the keyless floor resolves to WARN and
+    # would otherwise return first. Messaging only; it never touches
+    # env.is_native_search or the engine's keyless-floor runtime behavior.
+    if source == "web":
+        host_note = _host_native_web_note(config)
+        if host_note:
+            return _record(
+                status="unconfigured",
+                note=host_note,
+                requires=res.findings[0].requires if res.findings else "",
+                **common,
+            )
+
     if res.tier == backends.TIER_WARN:
         active = by_name.get(res.active_backend)
         return _record(status=health.DEGRADED, note=res.summary,
@@ -211,19 +255,6 @@ def _chained_record(source: str, config: Dict[str, Any]) -> Dict[str, Any]:
 
     # res.tier == error: separate "nothing configured" (tier off) from
     # "configured but broken" (tier error).
-    if source == "web" and env.is_native_search(config):
-        # The engine's web lanes are all unavailable BECAUSE the host brings
-        # its own (better) native search — intentionally off, no false alarm.
-        return _record(
-            status="unconfigured",
-            note=(
-                "host-native search active (LAST30DAYS_NATIVE_SEARCH): the "
-                "host's own web search serves this run; set a web key only "
-                "if you want engine-side web search"
-            ),
-            requires=res.findings[0].requires if res.findings else "",
-            **common,
-        )
     if res.findings and all(f.status == health.MISSING for f in res.findings):
         return _record(
             status="unconfigured",

@@ -17,6 +17,7 @@ Covers the plan's U4 scenarios:
 
 import io
 import json
+import os
 import sys
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -107,11 +108,18 @@ class _Hermetic:
                 return_value=("missing", "no token store at ~/.xurl"),
             ),
             mock.patch("lib.backends.which", lambda name: None),
+            # Snapshot os.environ so the CLAUDECODE scrub below is restored on
+            # exit. The real test shell (Claude Code) sets CLAUDECODE=1, which
+            # would otherwise make doctor's host-native web detection fire in
+            # every test and mask the keyless-degraded path. Tests that want the
+            # host-native path pass CLAUDECODE explicitly in their config dict.
+            mock.patch.dict(os.environ, {}, clear=False),
         ]
 
     def __enter__(self):
         for p in self._patches:
             p.start()
+        os.environ.pop("CLAUDECODE", None)
         return self
 
     def __exit__(self, *exc):
@@ -543,6 +551,25 @@ class NativeSearchHost(unittest.TestCase):
         self.assertEqual("off", record["tier"])
         self.assertEqual("unconfigured", record["status"])
         self.assertIn("host-native search", record["note"])
+
+    def test_web_on_claudecode_host_is_native_not_degraded(self):
+        # CLAUDECODE set but LAST30DAYS_NATIVE_SEARCH unset (the standalone
+        # `doctor` case) -> host-native note, not "degraded/keyless".
+        report = _build({"CLAUDECODE": "1"})
+        record = report["sources"]["web"]
+        self.assertEqual("off", record["tier"])
+        self.assertEqual("unconfigured", record["status"])
+        note = record["note"]
+        self.assertIn("Claude Code", note)
+        # Must NOT cite an env var the user never set.
+        self.assertNotIn("LAST30DAYS_NATIVE_SEARCH", note)
+
+    def test_web_stays_degraded_keyless_without_native_signal(self):
+        # No CLAUDECODE, no LAST30DAYS_NATIVE_SEARCH -> genuine keyless floor.
+        record = _build({})["sources"]["web"]
+        self.assertEqual("warn", record["tier"])
+        self.assertEqual("degraded", record["status"])
+        self.assertEqual("keyless", record["active_backend"])
 
     def test_web_with_key_stays_ok_on_native_host(self):
         report = _build({
