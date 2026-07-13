@@ -77,6 +77,38 @@ def test_discovery_plan_keeps_keyless_reddit_for_unknown_domains():
     assert plan.sources == ["reddit", "hackernews"]
 
 
+def test_discovery_plan_empty_domain_is_global_trending():
+    """Bare --discover: sweep every river feed's hot list; X sits out of the
+    nominate stage because its search lane needs a keyword."""
+    plan = planner.build_discovery_plan(
+        "",
+        available_sources=["reddit", "hackernews", "digg", "x"],
+    )
+
+    assert plan.domain == ""
+    assert plan.category is None
+    assert plan.subreddits == ["all"]
+    assert plan.sources == ["reddit", "hackernews", "digg"]
+    assert "x" not in plan.sources
+
+
+def test_global_discovery_disables_keyword_gate():
+    """Global trending fetches with keyword_gate=False; domain runs keep it on."""
+    seen: dict[str, bool] = {}
+
+    def fake_fetch(source, plan, *, from_date, to_date, depth, mock, config, keyword_gate=True):
+        seen[plan.domain or "global"] = keyword_gate
+        return [], None
+
+    with mock.patch.object(pipeline, "available_sources", return_value=["hackernews"]), \
+         mock.patch.object(pipeline, "_fetch_discovery_source", side_effect=fake_fetch):
+        pipeline.run_discover(domain="", config={}, as_of_date="2026-07-10")
+        pipeline.run_discover(domain="AI agents", config={}, as_of_date="2026-07-10")
+
+    assert seen["global"] is False
+    assert seen["AI agents"] is True
+
+
 def test_uncategorized_discovery_uses_parseable_r_all_listing_paths():
     card = (
         '<shreddit-post permalink="/r/gardening/comments/abc123/urban_garden/" '
@@ -434,6 +466,52 @@ def test_discovery_cli_json_contract_and_mutual_exclusion():
     )
     assert drill_conflict.returncode == 2
     assert "mutually exclusive" in drill_conflict.stderr
+
+
+def test_discovery_cli_bare_discover_is_global_trending():
+    """Bare --discover (no domain) must run global trending, not error."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "skills/last30days/scripts/last30days.py",
+            "--discover",
+            "--mock",
+            "--emit=json",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["kind"] == "discovery"
+    assert payload["domain"] == ""
+    assert payload["outcome"] in {"ok", "nothing-solid"}
+
+
+def test_discovery_cli_shallow_skips_enrichment():
+    """--discover-shallow ranks on listing evidence only (still floored)."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "skills/last30days/scripts/last30days.py",
+            "--discover", "AI agents",
+            "--discover-shallow",
+            "--mock",
+            "--emit=json",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["results"], "shallow mock sweep should still rank mock topics"
+    assert all(
+        "listing item" in topic["why_spiking"] for topic in payload["results"]
+    ), "shallow mode must be judged on listing evidence, not enriched corpora"
 
 
 def test_discovery_cli_rejects_historical_as_of():

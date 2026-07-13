@@ -569,7 +569,10 @@ def nominate_candidates(
                     to_date,
                     freshness_mode="breaking",
                 )
-                prepared = relevance.PreparedQuery(plan.domain)
+                # Global trending has no domain; annotate against a neutral
+                # phrase so snippet extraction still works without biasing
+                # relevance toward any keyword.
+                prepared = relevance.PreparedQuery(plan.domain or "trending now")
                 normalized = signals.annotate_stream(
                     normalized,
                     prepared,
@@ -830,6 +833,8 @@ def run_discover(
         subreddits=subreddits,
     )
 
+    global_mode = not plan.domain
+    domain_label = plan.domain or "everything"
     source_status: dict[str, schema.SourceOutcome] = {}
     query_plan = schema.QueryPlan(
         intent="breaking_news",
@@ -839,7 +844,7 @@ def run_discover(
         subqueries=[schema.SubQuery(
             label="discovery-listings",
             search_query=plan.domain,
-            ranking_query=f"What is accelerating in {plan.domain}?",
+            ranking_query=f"What is accelerating in {domain_label}?",
             sources=list(plan.sources),
         )],
         source_weights={source: 1.0 for source in plan.sources},
@@ -854,7 +859,9 @@ def run_discover(
         mock=mock,
         config=config,
         lookback_days=lookback_days,
-        keyword_gate=True,
+        # Global trending has no keyword to gate against - the river feeds' own
+        # hot ranking is the signal and the confidence floor culls the junk.
+        keyword_gate=not global_mode,
     )
 
     for source in DISCOVERY_SOURCES:

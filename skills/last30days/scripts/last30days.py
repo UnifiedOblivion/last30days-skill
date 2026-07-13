@@ -507,7 +507,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--discover",
         metavar="DOMAIN",
-        help="Sweep category listings and rank 5-10 topics accelerating in a domain",
+        nargs="?",
+        const="",
+        default=None,
+        help=(
+            "Sweep river listings and rank the topics accelerating in a domain; "
+            "each survivor gets a full research pass. Bare --discover (no domain) "
+            "runs global trending across every feed's hot list"
+        ),
+    )
+    parser.add_argument(
+        "--discover-shallow",
+        action="store_true",
+        help=(
+            "Skip the per-topic research pass during --discover: rank on listing "
+            "evidence only (faster, thinner; the confidence floor still applies)"
+        ),
     )
     parser.add_argument("--debug", action="store_true", help="Enable HTTP debug logging")
     parser.add_argument("--mock", action="store_true", help="Use mock retrieval fixtures")
@@ -1263,9 +1278,8 @@ def _save_discovery_output(
 
 def _run_discover(args: argparse.Namespace, config: dict[str, object]) -> int:
     domain = " ".join(str(args.discover or "").split())
-    if not domain:
-        sys.stderr.write("[last30days] --discover requires a non-empty domain.\n")
-        return 2
+    # Empty domain = global trending: sweep every river feed's hot list with no
+    # keyword gate. The confidence floor is what keeps junk out, not a keyword.
     if args.as_of_date:
         sys.stderr.write(
             "[last30days] --as-of cannot be used with --discover because discovery "
@@ -1315,6 +1329,7 @@ def _run_discover(args: argparse.Namespace, config: dict[str, object]) -> int:
             subreddits=subreddits,
             lookback_days=args.lookback_days or 30,
             as_of_date=args.as_of_date,
+            enrich=not args.discover_shallow,
         )
     except ValueError as exc:
         sys.stderr.write(f"[last30days] {exc}\n")
@@ -1332,7 +1347,7 @@ def _run_discover(args: argparse.Namespace, config: dict[str, object]) -> int:
     if args.save_dir:
         save_path = _save_discovery_output(
             rendered,
-            domain=domain,
+            domain=domain or "trending",
             emit=args.emit,
             save_dir=args.save_dir,
             suffix=args.save_suffix or "",
@@ -2071,7 +2086,9 @@ def _main(
         sys.stderr.write(setup_wizard.get_setup_status_text(results) + "\n")
         return 0
 
-    if args.discover:
+    # Bare --discover (no domain) is global trending, so the dispatch keys on
+    # "flag present" (is not None), never on the domain string's truthiness.
+    if args.discover is not None:
         if topic:
             sys.stderr.write(
                 "[last30days] --discover supplies the domain and cannot be combined "
