@@ -100,6 +100,35 @@ def test_footer_omits_errored_zero_item_source_but_keeps_evidence():
     assert "Do not interpret a failed source as no discussion" in text
 
 
+def test_footer_preserves_save_path_when_all_sources_empty():
+    # Every source returned zero items -> no source lines, but the durable
+    # raw-file citation must still render (regression guard for the U1 loop
+    # removal, which previously suppressed the whole footer incl. save path).
+    report = _report(
+        source_status={
+            "jobs": schema.SourceOutcome(source="jobs", state=schema.NO_RESULTS),
+            "x": schema.SourceOutcome(
+                source="x", state=schema.RATE_LIMITED, detail="429", fix_hint="doctor"
+            ),
+        },
+    )
+    footer = render._render_emoji_footer(report, "/tmp/l30d-scratch/topic-raw.md")
+
+    text = "\n".join(footer)
+    assert "✅ All agents reported back!" in text
+    assert "Raw results saved to /tmp/l30d-scratch/topic-raw.md" in text
+    # No per-source line for the zero-item sources.
+    assert "Jobs" not in text
+    assert "rate-limited" not in text
+
+
+def test_footer_empty_with_no_save_path_returns_nothing():
+    report = _report(
+        source_status={"jobs": schema.SourceOutcome(source="jobs", state=schema.NO_RESULTS)},
+    )
+    assert render._render_emoji_footer(report, None) == []
+
+
 def test_library_block_carries_explainer_when_populated():
     report = _report(items_by_source={"reddit": [_reddit_item()]})
     report.library_context = [

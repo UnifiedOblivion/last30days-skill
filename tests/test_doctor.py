@@ -108,9 +108,12 @@ class _Hermetic:
                 return_value=("missing", "no token store at ~/.xurl"),
             ),
             mock.patch("lib.backends.which", lambda name: None),
-            # Hermetic library: never scan the user's real saved-research dir.
+            # Hermetic library: never glob the user's real saved-research dir.
             # Tests that assert a specific brief count override this.
-            mock.patch("lib.library.scan_library", return_value=([], [])),
+            mock.patch("lib.doctor._count_saved_briefs", return_value=0),
+            # FTS5 is present on CI/dev SQLite; pin it so the library record's
+            # branch is deterministic regardless of the host's SQLite build.
+            mock.patch("lib.library_index.fts5_available", return_value=True),
             # Snapshot os.environ so the CLAUDECODE scrub below is restored on
             # exit. The real test shell (Claude Code) sets CLAUDECODE=1, which
             # would otherwise make doctor's host-native web detection fire in
@@ -259,23 +262,31 @@ class LibraryDoctorLine(unittest.TestCase):
     'From your library' block is explained on the health surface."""
 
     def test_library_reports_indexed_brief_count(self):
-        with _Hermetic(), mock.patch(
-            "lib.library.scan_library", return_value=([object(), object(), object()], [])
-        ):
+        with _Hermetic(), mock.patch("lib.doctor._count_saved_briefs", return_value=3):
             record = doctor.build_report({})["sources"]["library"]
         self.assertEqual("ok", record["status"])
         self.assertIn("3 saved briefs", record["note"])
 
     def test_library_empty_store_is_informational_ok(self):
-        record = _build({})["sources"]["library"]  # scan stubbed to empty
+        record = _build({})["sources"]["library"]  # count stubbed to 0
         self.assertEqual("ok", record["status"])
         self.assertIn("no saved briefs yet", record["note"])
 
     def test_library_without_fts5_degrades_informationally(self):
+        # Inner patch overrides the _Hermetic FTS5 pin.
         with _Hermetic(), mock.patch("lib.library_index.fts5_available", return_value=False):
             record = doctor.build_report({})["sources"]["library"]
         self.assertEqual("ok", record["status"])
         self.assertIn("FTS5", record["note"])
+
+    def test_library_scan_failure_is_informational_ok(self):
+        # A glob/OS error must never fail the run - it degrades to an OK line.
+        with _Hermetic(), mock.patch(
+            "lib.doctor._count_saved_briefs", side_effect=OSError("permission denied")
+        ):
+            record = doctor.build_report({})["sources"]["library"]
+        self.assertEqual("ok", record["status"])
+        self.assertIn("local research library", record["note"])
 
     def test_library_line_present_in_text_render(self):
         text = doctor.render_text(_build({}))
@@ -597,6 +608,16 @@ class NativeSearchHost(unittest.TestCase):
         self.assertIn("Claude Code", note)
         # Must NOT cite an env var the user never set.
         self.assertNotIn("LAST30DAYS_NATIVE_SEARCH", note)
+
+    def test_web_native_via_real_env_var_not_just_config(self):
+        # Production path: env.get_config() never puts CLAUDECODE in the config
+        # dict, so the os.environ branch is the ONLY one a real Claude Code
+        # session hits. Set the process env var (config has no CLAUDECODE key).
+        with _Hermetic(), mock.patch.dict(os.environ, {"CLAUDECODE": "1"}):
+            record = doctor.build_report({})["sources"]["web"]
+        self.assertEqual("off", record["tier"])
+        self.assertIn("Claude Code", record["note"])
+        self.assertNotIn("LAST30DAYS_NATIVE_SEARCH", record["note"])
 
     def test_web_stays_degraded_keyless_without_native_signal(self):
         # No CLAUDECODE, no LAST30DAYS_NATIVE_SEARCH -> genuine keyless floor.

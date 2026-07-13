@@ -504,6 +504,18 @@ def _jobs_record(config):
     )
 
 
+def _count_saved_briefs(memory_dir) -> int:
+    """Cheap count of saved research briefs (directory listing, no file parse).
+
+    Globs the ``*-raw*.md`` artifacts the engine writes, deliberately avoiding
+    library.scan_library's read_text+parse of every file - a count does not
+    need the parsed content, and the full scan adds real latency to every
+    `doctor` run on a large library.
+    """
+    path = Path(memory_dir).expanduser()
+    return sum(1 for _ in path.glob("*-raw*.md"))
+
+
 def _library_record(config):
     """Local research library that feeds the report's 'From your library' block.
 
@@ -524,9 +536,9 @@ def _library_record(config):
             ),
         )
     try:
-        memory_dir = config.get("LAST30DAYS_MEMORY_DIR") or library.DEFAULT_MEMORY_DIR
-        entries, _ = library.scan_library(memory_dir, library.DEFAULT_BRIEFS_DIR)
-        count = len(entries)
+        count = _count_saved_briefs(
+            config.get("LAST30DAYS_MEMORY_DIR") or library.DEFAULT_MEMORY_DIR
+        )
     except Exception:
         return _record(
             status=health.OK,
@@ -538,8 +550,8 @@ def _library_record(config):
     else:
         plural = "brief" if count == 1 else "briefs"
         note = (
-            f"{count} saved {plural} indexed; powers the 'From your library' "
-            "block (LAST30DAYS_LIBRARY_CONTEXT=off to hide)"
+            f"{count} saved {plural}; powers the 'From your library' block "
+            "(LAST30DAYS_LIBRARY_CONTEXT=off to hide)"
         )
     return _record(status=health.OK, requires="none (local SQLite)", note=note)
 
