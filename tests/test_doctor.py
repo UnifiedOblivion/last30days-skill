@@ -108,6 +108,9 @@ class _Hermetic:
                 return_value=("missing", "no token store at ~/.xurl"),
             ),
             mock.patch("lib.backends.which", lambda name: None),
+            # Hermetic library: never scan the real ~/Documents/Last30Days.
+            # Tests that assert a specific brief count override this.
+            mock.patch("lib.library.scan_library", return_value=([], [])),
             # Snapshot os.environ so the CLAUDECODE scrub below is restored on
             # exit. The real test shell (Claude Code) sets CLAUDECODE=1, which
             # would otherwise make doctor's host-native web detection fire in
@@ -249,6 +252,37 @@ class CookieBackedXReadiness(unittest.TestCase):
         record = report["sources"]["x"]
         self.assertEqual("off", record["tier"])
         self.assertEqual("unconfigured", record["status"])
+
+
+class LibraryDoctorLine(unittest.TestCase):
+    """U5: doctor reports the local research library so the report's
+    'From your library' block is explained on the health surface."""
+
+    def test_library_reports_indexed_brief_count(self):
+        with _Hermetic(), mock.patch(
+            "lib.library.scan_library", return_value=([object(), object(), object()], [])
+        ):
+            record = doctor.build_report({})["sources"]["library"]
+        self.assertEqual("ok", record["status"])
+        self.assertIn("3 saved briefs", record["note"])
+
+    def test_library_empty_store_is_informational_ok(self):
+        record = _build({})["sources"]["library"]  # scan stubbed to empty
+        self.assertEqual("ok", record["status"])
+        self.assertIn("no saved briefs yet", record["note"])
+
+    def test_library_without_fts5_degrades_informationally(self):
+        with _Hermetic(), mock.patch("lib.library_index.fts5_available", return_value=False):
+            record = doctor.build_report({})["sources"]["library"]
+        self.assertEqual("ok", record["status"])
+        self.assertIn("FTS5", record["note"])
+
+    def test_library_line_present_in_text_render(self):
+        text = doctor.render_text(_build({}))
+        self.assertTrue(
+            any("library" in l for l in text.splitlines()),
+            "doctor text output must carry a library line",
+        )
 
 
 class JsonShape(unittest.TestCase):

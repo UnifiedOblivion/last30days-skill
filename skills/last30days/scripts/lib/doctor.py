@@ -99,6 +99,7 @@ SOURCE_ORDER = (
     "pinterest",
     "xiaohongshu",
     "jobs",
+    "library",
 )
 
 # Key-presence booleans for the setup block. NEVER values.
@@ -503,6 +504,46 @@ def _jobs_record(config):
     )
 
 
+def _library_record(config):
+    """Local research library that feeds the report's 'From your library' block.
+
+    This is not a network source - it reports how many saved briefs are indexed
+    so the 'From your library' block's presence is explained on the health
+    surface. Read-only and never fails the run: an empty store, a missing store,
+    or a SQLite build without FTS5 all resolve to an informational OK line.
+    """
+    from . import library, library_index
+
+    if not library_index.fts5_available():
+        return _record(
+            status=health.OK,
+            requires="none (local SQLite)",
+            note=(
+                "search index unavailable (this SQLite build lacks FTS5); "
+                "saved briefs still render, `library search` is disabled"
+            ),
+        )
+    try:
+        memory_dir = config.get("LAST30DAYS_MEMORY_DIR") or library.DEFAULT_MEMORY_DIR
+        entries, _ = library.scan_library(memory_dir, library.DEFAULT_BRIEFS_DIR)
+        count = len(entries)
+    except Exception:
+        return _record(
+            status=health.OK,
+            requires="none (local SQLite)",
+            note="local research library (powers the 'From your library' block)",
+        )
+    if count == 0:
+        note = "no saved briefs yet - runs you save build this over time"
+    else:
+        plural = "brief" if count == 1 else "briefs"
+        note = (
+            f"{count} saved {plural} indexed; powers the 'From your library' "
+            "block (LAST30DAYS_LIBRARY_CONTEXT=off to hide)"
+        )
+    return _record(status=health.OK, requires="none (local SQLite)", note=note)
+
+
 _SOURCE_BUILDERS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "reddit": _reddit_record,
     "x": _x_record,
@@ -522,6 +563,7 @@ _SOURCE_BUILDERS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "pinterest": _pinterest_record,
     "xiaohongshu": _xiaohongshu_record,
     "jobs": _jobs_record,
+    "library": _library_record,
 }
 
 

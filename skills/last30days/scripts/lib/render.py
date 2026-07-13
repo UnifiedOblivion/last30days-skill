@@ -198,7 +198,15 @@ def _render_drill_context(report: schema.Report) -> list[str]:
 def _render_library_context(report: schema.Report) -> list[str]:
     if not report.library_context:
         return []
-    lines = [library_index.LIBRARY_CONTEXT_START, "## From your library", ""]
+    lines = [
+        library_index.LIBRARY_CONTEXT_START,
+        "## From your library",
+        "",
+        "_Prior saved runs on this topic from your local research library "
+        "(historical context, not fresh evidence; set "
+        "LAST30DAYS_LIBRARY_CONTEXT=off to hide)._",
+        "",
+    ]
     for item in report.library_context:
         detail = _truncate(item.summary or item.headline, 220)
         lines.append(

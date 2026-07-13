@@ -100,6 +100,32 @@ def test_footer_omits_errored_zero_item_source_but_keeps_evidence():
     assert "Do not interpret a failed source as no discussion" in text
 
 
+def test_library_block_carries_explainer_when_populated():
+    report = _report(items_by_source={"reddit": [_reddit_item()]})
+    report.library_context = [
+        schema.LibraryContext(
+            topic="test topic",
+            published_date="2026-07-01",
+            headline="a prior finding",
+            summary="a prior finding",
+            source_kind="brief",
+        )
+    ]
+
+    text = render.render_compact(report)
+
+    assert "## From your library" in text
+    assert "Prior saved runs" in text
+    assert "LAST30DAYS_LIBRARY_CONTEXT=off" in text
+
+
+def test_library_block_and_explainer_absent_when_empty():
+    report = _report(items_by_source={"reddit": [_reddit_item()]})
+    text = render.render_compact(report)
+    assert "## From your library" not in text
+    assert "Prior saved runs" not in text
+
+
 def test_footer_keeps_partial_populated_source_with_warning():
     """A source that returned SOME items but then failed stays in the footer
     with its ⚠ suffix - only zero-item sources are dropped."""
