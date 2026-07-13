@@ -671,6 +671,119 @@ def nominate_topics(
     return nominations
 
 
+# Enrichment fan-out bounds. Sub-runs hit the same upstream APIs as a normal
+# research pass, so parallelism stays low and the whole batch runs against a
+# wall-clock budget - a slow topic is dropped, never fatal.
+ENRICH_LIMIT = 6
+ENRICH_DEPTH = "quick"
+ENRICH_MAX_WORKERS = 3
+ENRICH_BUDGET_SECONDS = 240.0
+
+
+@dataclass
+class EnrichedTopic:
+    """A nomination plus the full-pipeline evidence gathered for it.
+
+    ``report`` is None when enrichment for this topic failed or ran past the
+    batch budget - the topic survives as nomination-only and the confidence
+    floor downstream decides whether its seed evidence is enough to show.
+    """
+
+    nomination: Nomination
+    report: schema.Report | None = None
+    error: str | None = None
+
+
+def enrich_nominations(
+    nominations: list[Nomination],
+    *,
+    config: dict[str, Any],
+    requested_sources: list[str] | None = None,
+    mock: bool = False,
+    depth: str = ENRICH_DEPTH,
+    lookback_days: int = 30,
+    as_of_date: str | None = None,
+    max_workers: int = ENRICH_MAX_WORKERS,
+    budget_seconds: float = ENRICH_BUDGET_SECONDS,
+) -> list[EnrichedTopic]:
+    """Stage 2 of discovery: run the real research pipeline on each nomination.
+
+    Each nominated topic gets a full ``run()`` pass (``internal_subrun=True``,
+    same lane as comparison-mode sub-runs), which buys the whole multi-source
+    corpus - Reddit with comments, X, YouTube, Techmeme, arXiv, HN, Polymarket,
+    web - plus clustering and ranking, with zero bespoke fetch code.
+
+    Failure containment: a topic whose sub-run raises is returned with
+    ``report=None`` and the error recorded; topics still unfinished when the
+    batch budget expires are likewise dropped to nomination-only. The batch
+    never raises and preserves nomination order.
+    """
+    if not nominations:
+        return []
+
+    def _run_one(nomination: Nomination) -> schema.Report:
+        return run(
+            topic=nomination.name,
+            config=config,
+            depth=depth,
+            requested_sources=requested_sources,
+            mock=mock,
+            lookback_days=lookback_days,
+            as_of_date=as_of_date,
+            internal_subrun=True,
+        )
+
+    enriched: dict[str, EnrichedTopic] = {}
+    executor = ThreadPoolExecutor(max_workers=max(1, max_workers))
+    try:
+        futures = {
+            executor.submit(_run_one, nomination): nomination
+            for nomination in nominations
+        }
+        try:
+            # as_completed's timeout is total elapsed for the batch - exactly
+            # the enrichment wall-clock budget.
+            for future in as_completed(futures, timeout=max(1.0, budget_seconds)):
+                nomination = futures[future]
+                try:
+                    report = future.result()
+                    enriched[nomination.name] = EnrichedTopic(
+                        nomination=nomination, report=report,
+                    )
+                except Exception as exc:
+                    enriched[nomination.name] = EnrichedTopic(
+                        nomination=nomination,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+                    print(
+                        f"[Discover] enrichment failed for {nomination.name!r}: "
+                        f"{type(exc).__name__}: {exc}",
+                        file=sys.stderr,
+                    )
+        except TimeoutError:
+            pass  # budget expired; unfinished topics fall through as nomination-only
+    finally:
+        # Do not block on stragglers: unstarted futures are cancelled, running
+        # ones are abandoned (their HTTP layers carry their own timeouts).
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    results: list[EnrichedTopic] = []
+    for nomination in nominations:
+        entry = enriched.get(nomination.name)
+        if entry is None:
+            entry = EnrichedTopic(
+                nomination=nomination,
+                error="enrichment budget exhausted",
+            )
+            print(
+                f"[Discover] enrichment budget exhausted before {nomination.name!r} "
+                "finished; keeping nomination-only evidence",
+                file=sys.stderr,
+            )
+        results.append(entry)
+    return results
+
+
 def run_discover(
     *,
     domain: str,
