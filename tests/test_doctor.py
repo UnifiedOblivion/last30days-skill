@@ -567,6 +567,39 @@ class YoutubeTranscriptionNote(unittest.TestCase):
         self.assertIn(self.entry.fix_cli, line)
 
 
+class YoutubeCommentsFixLine(unittest.TestCase):
+    """Greptile P2: when only the comment-text caveat fires (transcription key
+    present), the record still carries an actionable fix line."""
+
+    def test_comments_fix_names_scrapecreators_when_no_key(self):
+        record = _build(
+            {"GROQ_API_KEY": "dummy-groq-secret-000"},
+            probe_map={"yt-dlp": health.OK},
+        )["sources"]["youtube"]
+        self.assertEqual("ok", record["status"])
+        note = record["note"].lower()
+        self.assertIn("comment text needs", note)
+        self.assertNotIn("caption-free", note)  # transcription caveat absent
+        self.assertTrue(record["fix"], "comment-text caveat must carry a fix")
+
+    def test_comments_fix_names_optin_when_key_present(self):
+        record = _build(
+            {
+                "GROQ_API_KEY": "dummy-groq-secret-000",
+                "SCRAPECREATORS_API_KEY": "dummy-sc-secret-000",
+            },
+            probe_map={"yt-dlp": health.OK},
+        )["sources"]["youtube"]
+        self.assertEqual("ok", record["status"])
+        self.assertIn("youtube_comments", record["fix"])
+        self.assertIn("INCLUDE_SOURCES", record["fix"])
+
+    def test_transcription_fix_takes_precedence_when_both_fire(self):
+        record = _build({}, probe_map={"yt-dlp": health.OK})["sources"]["youtube"]
+        entry = prescriptions.get("youtube", "transcription_key_missing")
+        self.assertIn(entry.fix_nl, record["fix"])
+
+
 class YoutubeHealthyWhenFullyConfigured(unittest.TestCase):
     """U3: with a transcription key AND comment access, the YouTube note carries
     no caveat - it is cleanly Ready."""

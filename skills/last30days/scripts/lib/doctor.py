@@ -351,6 +351,16 @@ def _youtube_record(config):
         notes.append(
             "comment text needs a ScrapeCreators key + youtube_comments opt-in"
         )
+        # Actionable fix, matching the transcription branch. The transcription
+        # fix takes precedence when both caveats fire (one fix line per record).
+        if not record["fix"]:
+            if not config.get("SCRAPECREATORS_API_KEY"):
+                record["fix"] = _sc_fix()
+            else:
+                record["fix"] = (
+                    "add youtube_comments to INCLUDE_SOURCES in "
+                    "~/.config/last30days/.env to enable YouTube comment text"
+                )
     if notes:
         joined = "; ".join(notes)
         record["note"] = (record["note"] + "; " + joined) if record["note"] else joined
