@@ -108,7 +108,7 @@ class _Hermetic:
                 return_value=("missing", "no token store at ~/.xurl"),
             ),
             mock.patch("lib.backends.which", lambda name: None),
-            # Hermetic library: never scan the real ~/Documents/Last30Days.
+            # Hermetic library: never scan the user's real saved-research dir.
             # Tests that assert a specific brief count override this.
             mock.patch("lib.library.scan_library", return_value=([], [])),
             # Snapshot os.environ so the CLAUDECODE scrub below is restored on
@@ -533,7 +533,7 @@ class YoutubeTranscriptionNote(unittest.TestCase):
         self.assertEqual("ok", record["status"])
         note = record["note"].lower()
         # Honest note: affirms the working path, scopes the key to caption-free.
-        self.assertIn("search + transcripts work via yt-dlp", note)
+        self.assertIn("search + transcripts work", note)
         self.assertIn("caption-free", note)
         # Does not read as broken and does not attribute comment text to yt-dlp.
         self.assertNotIn("no transcription key for caption-free videos", note)
@@ -551,7 +551,7 @@ class YoutubeTranscriptionNote(unittest.TestCase):
         line = next(
             l for l in text.splitlines() if l.strip().startswith("✓ youtube")
         )
-        self.assertIn("search + transcripts work via yt-dlp", line)
+        self.assertIn("search + transcripts work", line)
         self.assertIn(f"fix: {self.entry.fix_nl}", line)
         self.assertIn(self.entry.fix_cli, line)
 

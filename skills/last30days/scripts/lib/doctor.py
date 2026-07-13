@@ -340,8 +340,8 @@ def _youtube_record(config):
     if not env.transcription_providers(config):
         entry = prescriptions.get("youtube", "transcription_key_missing")
         notes.append(
-            "search + transcripts work via yt-dlp; a transcription key only "
-            "adds captions for caption-free videos"
+            "search + transcripts work; a transcription key only adds "
+            "captions for caption-free videos"
         )
         record["fix"] = _fix_text(entry)
     # Comment *text* comes from ScrapeCreators, never yt-dlp (yt-dlp yields
