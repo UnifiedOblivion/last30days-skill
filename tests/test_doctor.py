@@ -489,18 +489,49 @@ class YoutubeTranscriptionNote(unittest.TestCase):
         record = self.report["sources"]["youtube"]
         self.assertEqual("ok", record["tier"])
         self.assertEqual("ok", record["status"])
-        self.assertIn("no transcription key for caption-free videos", record["note"])
+        note = record["note"].lower()
+        # Honest note: affirms the working path, scopes the key to caption-free.
+        self.assertIn("search + transcripts work via yt-dlp", note)
+        self.assertIn("caption-free", note)
+        # Does not read as broken and does not attribute comment text to yt-dlp.
+        self.assertNotIn("no transcription key for caption-free videos", note)
         self.assertIn(self.entry.fix_nl, record["fix"])
         self.assertIn(self.entry.fix_cli, record["fix"])
+
+    def test_comment_text_attributed_to_scrapecreators_not_ytdlp(self):
+        # config has no ScrapeCreators key -> comment note names ScrapeCreators,
+        # never claims comment text comes from yt-dlp.
+        note = self.report["sources"]["youtube"]["note"].lower()
+        self.assertIn("comment text needs a scrapecreators key", note)
 
     def test_text_line_includes_the_fix_on_the_ok_line(self):
         text = doctor.render_text(self.report)
         line = next(
             l for l in text.splitlines() if l.strip().startswith("✓ youtube")
         )
-        self.assertIn("no transcription key for caption-free videos", line)
+        self.assertIn("search + transcripts work via yt-dlp", line)
         self.assertIn(f"fix: {self.entry.fix_nl}", line)
         self.assertIn(self.entry.fix_cli, line)
+
+
+class YoutubeHealthyWhenFullyConfigured(unittest.TestCase):
+    """U3: with a transcription key AND comment access, the YouTube note carries
+    no caveat - it is cleanly Ready."""
+
+    def test_no_caveats_when_transcription_and_comments_available(self):
+        report = _build(
+            {
+                "GROQ_API_KEY": "dummy-groq-secret-000",
+                "SCRAPECREATORS_API_KEY": "dummy-sc-secret-000",
+                "INCLUDE_SOURCES": "youtube_comments",
+            },
+            probe_map={"yt-dlp": health.OK},
+        )
+        record = report["sources"]["youtube"]
+        self.assertEqual("ok", record["status"])
+        note = record["note"].lower()
+        self.assertNotIn("caption-free", note)
+        self.assertNotIn("comment text needs", note)
 
 
 class NativeSearchHost(unittest.TestCase):

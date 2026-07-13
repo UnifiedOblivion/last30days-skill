@@ -299,13 +299,29 @@ def _x_record(config):
 
 def _youtube_record(config):
     record = _chained_record("youtube", config)
-    if record["status"] == health.OK and not env.transcription_providers(config):
-        # Usable, but the caption-free transcript backstop is unavailable.
+    if record["status"] != health.OK:
+        return record
+    notes: List[str] = []
+    # yt-dlp already provides search + transcripts. A transcription key only
+    # backfills captions for the occasional caption-free video - an enhancement,
+    # not a sign YouTube is broken.
+    if not env.transcription_providers(config):
         entry = prescriptions.get("youtube", "transcription_key_missing")
-        record["note"] = (record["note"] + "; " if record["note"] else "") + (
-            "no transcription key for caption-free videos"
+        notes.append(
+            "search + transcripts work via yt-dlp; a transcription key only "
+            "adds captions for caption-free videos"
         )
         record["fix"] = _fix_text(entry)
+    # Comment *text* comes from ScrapeCreators, never yt-dlp (yt-dlp yields
+    # search, transcripts, and a comment count only). Say so accurately so a
+    # user does not expect yt-dlp to surface comment text.
+    if not env.is_youtube_comments_available(config):
+        notes.append(
+            "comment text needs a ScrapeCreators key + youtube_comments opt-in"
+        )
+    if notes:
+        joined = "; ".join(notes)
+        record["note"] = (record["note"] + "; " + joined) if record["note"] else joined
     return record
 
 
