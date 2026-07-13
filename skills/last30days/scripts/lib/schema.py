@@ -293,7 +293,14 @@ class DiscoveryTopic:
 
 @dataclass
 class DiscoveryReport:
-    """Versioned result of a domain-level listing sweep."""
+    """Versioned result of a domain-level listing sweep.
+
+    ``outcome`` is "ok" when at least one topic cleared the confidence floor,
+    "nothing-solid" when the window's evidence was all sub-floor - an honest
+    empty result instead of ranked noise. ``weak_signal`` optionally names the
+    strongest sub-floor topic so a nothing-solid brief can still say what came
+    closest.
+    """
 
     domain: str
     range_from: str
@@ -303,6 +310,8 @@ class DiscoveryReport:
     topics: list[DiscoveryTopic]
     source_status: dict[str, SourceOutcome] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    outcome: str = "ok"
+    weak_signal: str | None = None
 
 
 @dataclass
@@ -845,4 +854,6 @@ def to_discovery_export(report: DiscoveryReport) -> dict[str, Any]:
             for topic in report.topics
         ],
         "warnings": list(report.warnings),
+        "outcome": report.outcome,
+        "weak_signal": report.weak_signal,
     }

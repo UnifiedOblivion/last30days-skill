@@ -269,7 +269,8 @@ def test_discovery_drops_zero_velocity_clusters():
         )
 
     assert report.topics == []
-    assert "Fewer than five topic clusters survived this domain sweep." in report.warnings
+    assert report.outcome == "nothing-solid"
+    assert any("confidence floor" in warning for warning in report.warnings)
 
 
 def test_explicit_unavailable_discovery_source_does_not_widen_to_other_sources():

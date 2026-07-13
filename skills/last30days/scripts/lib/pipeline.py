@@ -784,6 +784,18 @@ def enrich_nominations(
     return results
 
 
+def _enriched_evidence_items(entry: EnrichedTopic) -> list[schema.SourceItem]:
+    """The items a topic is judged on: the enriched corpus when the pipeline
+    pass succeeded, the nomination's seed items otherwise."""
+    if entry.report is not None:
+        flattened: list[schema.SourceItem] = []
+        for source_items in entry.report.items_by_source.values():
+            flattened.extend(source_items)
+        if flattened:
+            return flattened
+    return entry.nomination.items
+
+
 def run_discover(
     *,
     domain: str,
@@ -795,6 +807,7 @@ def run_discover(
     lookback_days: int = 30,
     as_of_date: str | None = None,
     limit: int = 10,
+    enrich: bool = False,
 ) -> schema.DiscoveryReport:
     """Sweep category listings and rank the topics gaining velocity."""
     from_date, to_date = dates.get_date_range(lookback_days, as_of_date=as_of_date)
@@ -861,43 +874,82 @@ def run_discover(
 
     topic_limit = max(5, min(10, limit))
     nominations = nominate_topics(
-        bundle, query_plan, plan, to_date=to_date, limit=topic_limit,
+        bundle, query_plan, plan,
+        to_date=to_date,
+        limit=ENRICH_LIMIT if enrich else topic_limit,
     )
 
+    if enrich and nominations:
+        enriched_entries = enrich_nominations(
+            nominations,
+            config=config,
+            mock=mock,
+            lookback_days=lookback_days,
+            as_of_date=as_of_date,
+        )
+    else:
+        enriched_entries = [
+            EnrichedTopic(nomination=nomination) for nomination in nominations
+        ]
+
     topics: list[schema.DiscoveryTopic] = []
-    for nomination in nominations:
-        cluster_items = nomination.items
-        rank = len(topics) + 1
-        sources = sorted({item.source for item in cluster_items})
-        native_total = sum(rerank.discovery_engagement_total(item) for item in cluster_items)
+    weak_signal: tuple[float, str] | None = None
+    for entry in enriched_entries:
+        evidence_items = _enriched_evidence_items(entry)
+        sources = sorted({item.source for item in evidence_items})
+        native_total = sum(
+            rerank.discovery_engagement_total(item) for item in evidence_items
+        )
+        score = rerank.discovery_velocity_score(evidence_items, as_of_date=to_date)
+        if not rerank.passes_discovery_floor(
+            source_count=len(sources),
+            engagement_total=native_total,
+            item_count=len(evidence_items),
+        ):
+            # Sub-floor evidence never ranks; remember what came closest so a
+            # nothing-solid brief can still name the strongest weak signal.
+            if weak_signal is None or score > weak_signal[0]:
+                weak_signal = (score, entry.nomination.name)
+            continue
+        if len(topics) >= topic_limit:
+            break
+        nomination = entry.nomination
         source_phrase = ", ".join(sources[:-1]) + (
             f" and {sources[-1]}" if len(sources) > 1 else (sources[0] if sources else "the listings")
         )
+        noun = "evidence item" if entry.report is not None else "listing item"
         why = (
-            f"{len(cluster_items)} listing item{'s' if len(cluster_items) != 1 else ''} on "
+            f"{len(evidence_items)} {noun}{'s' if len(evidence_items) != 1 else ''} on "
             f"{source_phrase} generated {native_total:,.0f} native interactions. "
             f"{nomination.summary[:220]}"
         )
         topics.append(schema.DiscoveryTopic(
-            rank=rank,
+            rank=len(topics) + 1,
             name=nomination.name,
             why_spiking=why,
-            momentum=_discovery_momentum(cluster_items, to_date),
-            velocity_score=round(nomination.seed_score, 2),
+            momentum=_discovery_momentum(evidence_items, to_date),
+            velocity_score=round(score, 2),
             sources=sources,
-            engagement_by_source=_discovery_engagement(cluster_items),
+            engagement_by_source=_discovery_engagement(evidence_items),
             command=f'/last30days "{nomination.name.replace(chr(34), chr(39))}"',
-            evidence_urls=list(dict.fromkeys(item.url for item in cluster_items if item.url))[:5],
+            evidence_urls=list(dict.fromkeys(item.url for item in evidence_items if item.url))[:5],
         ))
 
+    outcome = "ok" if topics else "nothing-solid"
+
     warnings: list[str] = []
-    if len(topics) < 5:
-        warnings.append("Fewer than five topic clusters survived this domain sweep.")
+    if outcome == "nothing-solid":
+        warnings.append(
+            "No topic cleared the discovery confidence floor this window; "
+            "reporting nothing solid instead of ranked noise."
+        )
+    elif len(topics) < 5:
+        warnings.append("Fewer than five topic clusters cleared the confidence floor this window.")
     if topics and all(len(topic.sources) == 1 for topic in topics):
         warnings.append("Discovery evidence is single-source; configure Digg for broader confirmation.")
     failed = [
-        source for source, outcome in source_status.items()
-        if outcome.state not in {health.OK, schema.NO_RESULTS, schema.SKIPPED_UNCONFIGURED}
+        source for source, outcome_state in source_status.items()
+        if outcome_state.state not in {health.OK, schema.NO_RESULTS, schema.SKIPPED_UNCONFIGURED}
     ]
     if failed:
         warnings.append(f"Some discovery sources degraded: {', '.join(sorted(failed))}.")
@@ -911,6 +963,8 @@ def run_discover(
         topics=topics,
         source_status=source_status,
         warnings=warnings,
+        outcome=outcome,
+        weak_signal=weak_signal[1] if weak_signal and not topics else None,
     )
 
 
