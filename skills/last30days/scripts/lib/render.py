@@ -2103,18 +2103,12 @@ def _build_source_footer_lines(report: schema.Report) -> list[str]:
             line += f" │ ⚠ {_format_outcome(outcome)}"
         out.append(line)
 
-    populated = {source for source, items in report.items_by_source.items() if items}
-    footer_meta = {
-        source: (emoji, label)
-        for source, emoji, label, _item_word, _engagement in _FOOTER_SOURCES
-    }
-    footer_meta.update({"polymarket": ("📊", "Polymarket"), "grounding": ("🌐", "Web")})
-    for source, outcome in sorted(report.source_status.items()):
-        if source in populated:
-            continue
-        emoji, label = footer_meta.get(source, ("⚪", _source_label(source)))
-        out.append(f"{emoji} {label}: {_format_outcome(outcome)}")
-
+    # Only populated sources (>=1 item) get an emoji-tree line. A source that
+    # returned zero items - whether it completed cleanly (NO_RESULTS) or failed
+    # (rate-limited / unreachable / etc.) - is omitted from the user-facing
+    # footer. Its failure signal remains visible to synthesis in the
+    # ## Partial Coverage / ## Source Coverage evidence blocks, so nothing is
+    # silently lost; the conclusion surface just stays clean.
     return out
 
 

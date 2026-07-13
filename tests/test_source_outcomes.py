@@ -305,9 +305,12 @@ def test_footer_and_synthesis_note_surface_failed_source():
 
     text = render.render_compact(report)
 
+    # A failed source that returned zero items is surfaced to synthesis via the
+    # evidence blocks (## Partial Coverage), NOT as a user-facing footer line -
+    # zero-item sources are dropped from the emoji tree (see test_render_footer).
     assert "## Partial Coverage" in text
     assert "Do not interpret a failed source as no discussion" in text
-    assert "🔵 X: rate-limited: HTTP 429 after retry budget (run doctor for fixes)" in text
+    assert "🔵 X: rate-limited: HTTP 429 after retry budget (run doctor for fixes)" not in text
 
 
 def test_report_source_status_round_trips_through_schema_serialization():
