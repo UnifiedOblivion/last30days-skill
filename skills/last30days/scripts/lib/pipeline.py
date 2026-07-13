@@ -371,7 +371,17 @@ def _fetch_discovery_source(
     depth: str,
     mock: bool,
     config: dict[str, Any],
+    keyword_gate: bool = True,
 ) -> tuple[list[dict[str, Any]], str | None]:
+    """Fetch one listing/river source for the nominate stage.
+
+    ``keyword_gate`` controls whether items are filtered to the domain by
+    ``_matches_discovery_domain``. Domain-scoped discovery (``--discover X``)
+    keeps the gate on; global trending (``--discover`` with no domain) turns it
+    off, because there is no keyword to gate against - the river feeds ARE the
+    "what is hot right now" signal, and the confidence floor downstream is what
+    keeps junk out, not a keyword match.
+    """
     if mock:
         return _mock_discovery_items(source, plan.domain, to_date), None
     if source == "reddit":
@@ -379,13 +389,14 @@ def _fetch_discovery_source(
             plan.subreddits, depth=depth, query=plan.domain,
         )
         items = result.get("items") or []
-        items = [
-            item for item in items
-            if _matches_discovery_domain(
-                plan.domain,
-                f"{item.get('title') or ''} {item.get('selftext') or ''}",
-            )
-        ]
+        if keyword_gate:
+            items = [
+                item for item in items
+                if _matches_discovery_domain(
+                    plan.domain,
+                    f"{item.get('title') or ''} {item.get('selftext') or ''}",
+                )
+            ]
         return items, "; ".join(result.get("errors") or []) or None
     if source == "hackernews":
         result = hackernews.fetch_discovery_listings(from_date, to_date, depth=depth)
@@ -395,21 +406,25 @@ def _fetch_discovery_source(
                 plan.domain,
                 str(item.get("title") or ""),
             )
-        # HN is a broad technology listing, so keep only domain-bearing stories.
-        items = [
-            item for item in items
-            if _matches_discovery_domain(plan.domain, str(item.get("title") or ""))
-        ]
+        # HN is a broad technology listing, so keep only domain-bearing stories
+        # when a domain is in play; global trending keeps the whole front page.
+        if keyword_gate:
+            items = [
+                item for item in items
+                if _matches_discovery_domain(plan.domain, str(item.get("title") or ""))
+            ]
         errors = result.get("errors") or []
         return items, "; ".join(errors) or None
     if source == "digg":
         result = digg.search_digg(plan.domain, from_date, to_date, depth=depth)
         items = digg.parse_digg_response(result, query=plan.domain)
-        # Digg is an AI-focused broad listing, so keep only domain-bearing clusters.
-        items = [
-            item for item in items
-            if _matches_discovery_domain(plan.domain, str(item.get("title") or ""))
-        ]
+        # Digg is an AI-focused broad listing, so keep only domain-bearing
+        # clusters when scoped; global trending keeps the whole feed.
+        if keyword_gate:
+            items = [
+                item for item in items
+                if _matches_discovery_domain(plan.domain, str(item.get("title") or ""))
+            ]
         return items, result.get("error")
     if source == "x":
         subquery = schema.SubQuery(
@@ -504,57 +519,29 @@ def _discovery_momentum(items: list[schema.SourceItem], to_date: str) -> str:
     return "new-this-week" if ages and max(ages) < 7 else "building"
 
 
-def run_discover(
+def nominate_candidates(
+    plan: schema.DiscoveryPlan,
     *,
-    domain: str,
+    from_date: str,
+    to_date: str,
+    depth: str,
+    mock: bool,
     config: dict[str, Any],
-    depth: str = "default",
-    requested_sources: list[str] | None = None,
-    mock: bool = False,
-    subreddits: list[str] | None = None,
-    lookback_days: int = 30,
-    as_of_date: str | None = None,
-    limit: int = 10,
-) -> schema.DiscoveryReport:
-    """Sweep category listings and rank the topics gaining velocity."""
-    from_date, to_date = dates.get_date_range(lookback_days, as_of_date=as_of_date)
-    requested = normalize_requested_sources(requested_sources)
-    unsupported = sorted(set(requested or []) - set(DISCOVERY_SOURCES))
-    if unsupported:
-        raise ValueError(
-            "Discovery supports listing sources only: reddit, hackernews, digg "
-            f"(unsupported: {', '.join(unsupported)})"
-        )
-    available = list(DISCOVERY_SOURCES) if mock else [
-        source for source in available_sources(config, requested, x_pending=False)
-        if source in DISCOVERY_SOURCES
-    ]
-    if requested:
-        available = [source for source in available if source in requested]
-    plan = planner.build_discovery_plan(
-        domain,
-        available_sources=available,
-        subreddits=subreddits,
-    )
+    lookback_days: int,
+    keyword_gate: bool = True,
+) -> schema.RetrievalBundle:
+    """Stage 1 of discovery: fetch, normalize, and bundle candidate hot items
+    from the river/listing feeds.
 
-    source_status: dict[str, schema.SourceOutcome] = {}
+    This is the topic-nomination pass. For domain discovery ``keyword_gate`` is
+    on and the feeds are filtered to the domain; for global trending it is off
+    and the feeds' own hot ranking IS the signal. The returned bundle feeds the
+    clustering + enrichment stages downstream. Every source's failure is
+    recorded on the bundle (never raised) so a single dead feed cannot sink the
+    run - the confidence floor decides whether the surviving evidence is enough.
+    """
     bundle = schema.RetrievalBundle()
-    query_plan = schema.QueryPlan(
-        intent="breaking_news",
-        freshness_mode="breaking",
-        cluster_mode="story",
-        raw_topic=plan.domain,
-        subqueries=[schema.SubQuery(
-            label="discovery-listings",
-            search_query=plan.domain,
-            ranking_query=f"What is accelerating in {plan.domain}?",
-            sources=list(plan.sources),
-        )],
-        source_weights={source: 1.0 for source in plan.sources},
-        notes=["discover-mode", "listing-sweep"],
-    )
-
-    with ThreadPoolExecutor(max_workers=len(plan.sources)) as executor:
+    with ThreadPoolExecutor(max_workers=max(1, len(plan.sources))) as executor:
         futures = {
             executor.submit(
                 _fetch_discovery_source,
@@ -565,6 +552,7 @@ def run_discover(
                 depth=depth,
                 mock=mock,
                 config=config,
+                keyword_gate=keyword_gate,
             ): source
             for source in plan.sources
         }
@@ -606,6 +594,68 @@ def run_discover(
             except Exception as exc:
                 state, attempted = _classify_source_failure(exc)
                 bundle.record_failure(source, state, str(exc), attempted=attempted)
+    return bundle
+
+
+def run_discover(
+    *,
+    domain: str,
+    config: dict[str, Any],
+    depth: str = "default",
+    requested_sources: list[str] | None = None,
+    mock: bool = False,
+    subreddits: list[str] | None = None,
+    lookback_days: int = 30,
+    as_of_date: str | None = None,
+    limit: int = 10,
+) -> schema.DiscoveryReport:
+    """Sweep category listings and rank the topics gaining velocity."""
+    from_date, to_date = dates.get_date_range(lookback_days, as_of_date=as_of_date)
+    requested = normalize_requested_sources(requested_sources)
+    unsupported = sorted(set(requested or []) - set(DISCOVERY_SOURCES))
+    if unsupported:
+        raise ValueError(
+            "Discovery supports listing sources only: reddit, hackernews, digg "
+            f"(unsupported: {', '.join(unsupported)})"
+        )
+    available = list(DISCOVERY_SOURCES) if mock else [
+        source for source in available_sources(config, requested, x_pending=False)
+        if source in DISCOVERY_SOURCES
+    ]
+    if requested:
+        available = [source for source in available if source in requested]
+    plan = planner.build_discovery_plan(
+        domain,
+        available_sources=available,
+        subreddits=subreddits,
+    )
+
+    source_status: dict[str, schema.SourceOutcome] = {}
+    query_plan = schema.QueryPlan(
+        intent="breaking_news",
+        freshness_mode="breaking",
+        cluster_mode="story",
+        raw_topic=plan.domain,
+        subqueries=[schema.SubQuery(
+            label="discovery-listings",
+            search_query=plan.domain,
+            ranking_query=f"What is accelerating in {plan.domain}?",
+            sources=list(plan.sources),
+        )],
+        source_weights={source: 1.0 for source in plan.sources},
+        notes=["discover-mode", "listing-sweep"],
+    )
+
+    bundle = nominate_candidates(
+        plan,
+        from_date=from_date,
+        to_date=to_date,
+        depth=depth,
+        mock=mock,
+        config=config,
+        lookback_days=lookback_days,
+        keyword_gate=True,
+    )
 
     for source in DISCOVERY_SOURCES:
         if source in bundle.source_status:

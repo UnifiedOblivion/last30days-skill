@@ -230,7 +230,7 @@ def test_discovery_renderer_snapshot():
 
 
 def test_keyless_discovery_degrades_without_digg():
-    def fake_fetch(source, plan, *, from_date, to_date, depth, mock, config):
+    def fake_fetch(source, plan, *, from_date, to_date, depth, mock, config, keyword_gate=True):
         return pipeline._mock_discovery_items(source, plan.domain, to_date), None
 
     with mock.patch.object(pipeline, "available_sources", return_value=["reddit", "hackernews"]), \
@@ -302,7 +302,7 @@ def test_discovery_reads_browser_credentials_and_does_not_schedule_pending_x():
         assert x_pending is False
         return ["reddit", "hackernews"] + (["x"] if x_pending is not False else [])
 
-    def fake_fetch(source, plan, *, from_date, to_date, depth, mock, config):
+    def fake_fetch(source, plan, *, from_date, to_date, depth, mock, config, keyword_gate=True):
         fetched_sources.append(source)
         return pipeline._mock_discovery_items(source, plan.domain, to_date), None
 
@@ -342,7 +342,7 @@ def test_authenticated_x_discovery_uses_available_backend():
 
 
 def test_listing_failure_is_not_reported_as_clean_no_results():
-    def fake_fetch(source, plan, *, from_date, to_date, depth, mock, config):
+    def fake_fetch(source, plan, *, from_date, to_date, depth, mock, config, keyword_gate=True):
         if source == "reddit":
             return [], "connection timed out"
         return pipeline._mock_discovery_items(source, plan.domain, to_date), None
